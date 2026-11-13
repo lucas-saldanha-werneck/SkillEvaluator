@@ -215,3 +215,106 @@ def test_mod_module_invalid_is_one_error(tmp_path):
     )
     [issue] = [i for i in qs.all_issues if i.rule_id == "mod_module_invalid"]
     assert issue.severity == "error" and "./gone.ts" in issue.message
+
+
+# --- Discoverability -------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "desc,rule,points",
+    [
+        ("Short", "description_short", 20),
+        ("x" * 201, "description_long", 5),
+        ("Handles various things for your project setup and other tasks", "description_vague", 15),
+        ("You can use this to format Markdown tables in pull requests", "description_person", 15),
+    ],
+)
+def test_plugin_description_rules(tmp_path, desc, rule, points):
+    qs = _score(
+        make_plugin(tmp_path / "p", manifest={**GOOD_MANIFEST, "description": desc}, files={"README.md": "# p"})
+    )
+    assert {i.rule_id: i.deduction for i in qs.discoverability.issues}[rule] == points
+
+
+def test_good_description_has_no_description_issue(tmp_path):
+    qs = _score(make_plugin(tmp_path / "p", manifest=GOOD_MANIFEST, files={"README.md": "# p"}))
+    assert not [i for i in _ids(qs) if i.startswith("description_")]
+
+
+def test_missing_description_counts_as_short(tmp_path):
+    m = {k: v for k, v in GOOD_MANIFEST.items() if k != "description"}
+    qs = _score(make_plugin(tmp_path / "p", manifest=m))
+    issue = next(i for i in qs.all_issues if i.rule_id == "description_short")
+    assert "missing" in issue.message
+
+
+def test_component_description_cap(tmp_path):
+    files = {f"commands/c{i}.md": "Do it\n" for i in range(4)}
+    qs = _score(make_plugin(tmp_path / "p", manifest=GOOD_MANIFEST, files={**files, "README.md": "# p"}))
+    [issue] = [i for i in qs.all_issues if i.rule_id == "component_description_missing"]
+    assert issue.deduction == 30
+
+
+def test_described_command_and_agent_are_fine(tmp_path):
+    files = {
+        "commands/c.md": "---\ndescription: Formats the current table\n---\nDo it\n",
+        "agents/a.md": "---\nname: a\ndescription: Reviews table widths\n---\nBody\n",
+        "README.md": "# p",
+    }
+    qs = _score(make_plugin(tmp_path / "p", manifest=GOOD_MANIFEST, files=files))
+    assert "component_description_missing" not in _ids(qs)
+
+
+def test_mod_registration_short_description(tmp_path):
+    qs = _score(
+        make_plugin(
+            tmp_path / "p",
+            manifest=GOOD_MANIFEST,
+            files={
+                "README.md": "# p",
+                "hooks/hooks.json": json.dumps({"modules": ["./r.ts"]}),
+                "hooks/r.ts": "export function register(on) { on('session.start', async ($) => {"
+                " await $.tool.register({ name: 'a', description: 'Too short' })"
+                " await $.tool.register({ name: 'b', description: D }) }) }\n",
+            },
+        )
+    )
+    assert {i.rule_id: i.deduction for i in qs.all_issues}["mod_registration_description"] == 10
+    assert qs.unresolved_registrations == 1
+
+
+def test_readme_missing_and_status_message(tmp_path):
+    qs = _score(
+        make_plugin(
+            tmp_path / "p",
+            manifest=GOOD_MANIFEST,
+            files={
+                "hooks/hooks.json": json.dumps(
+                    {"hooks": {"Stop": [{"hooks": [{"type": "command", "command": "true", "timeout": 5}]}]}}
+                )
+            },
+        )
+    )
+    assert {"readme_missing", "hook_status_message_missing"} <= set(_ids(qs))
+
+
+def test_status_message_satisfies_transparency(tmp_path):
+    qs = _score(
+        make_plugin(
+            tmp_path / "p",
+            manifest=GOOD_MANIFEST,
+            files={
+                "readme.md": "# p",
+                "hooks/hooks.json": json.dumps(
+                    {
+                        "hooks": {
+                            "Stop": [
+                                {"hooks": [{"type": "command", "command": "true", "timeout": 5, "statusMessage": "Saving"}]}
+                            ]
+                        }
+                    }
+                ),
+            },
+        )
+    )
+    assert not {"readme_missing", "hook_status_message_missing"} & set(_ids(qs))

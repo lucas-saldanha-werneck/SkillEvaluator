@@ -16,13 +16,19 @@ from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any
 
-from skillevaluator.constants import CONTENT_DEDUP_MAX_FILE_BYTES, PLUGIN_CONTAINED_MANIFEST_TYPE
+from skillevaluator.constants import (
+    CONTENT_DEDUP_MAX_FILE_BYTES,
+    PLUGIN_CONTAINED_MANIFEST_TYPE,
+    QUALITY_PERSON_PHRASES,
+    QUALITY_VAGUE_WORDS,
+)
 from skillevaluator.plugin_component_risk import iter_hook_handlers
 from skillevaluator.plugin_format_schema import ManifestIssue, validate_manifest_fields
 from skillevaluator.plugin_inventory import _finding_rel_path
 from skillevaluator.plugin_manifest import PluginManifestPathError, find_claude_marketplace_entry
 from skillevaluator.plugin_mods import ModInventory, read_mods
 from skillevaluator.utils.secure_fs import SecurePathError
+from skillevaluator.validators.quality_score import _contains_any_term
 
 if TYPE_CHECKING:
     from skillevaluator.models.quality import PluginQualityScoreResult
@@ -367,8 +373,83 @@ def check_correctness(ctx: PluginQualityContext, qs: PluginQualityScoreResult, r
     _check_hooks_and_mods(ctx, qs, rules)
 
 
+def _component_description(member: Any) -> str:
+    if member.path is None and isinstance(member.config, dict):  # command map entry
+        value = member.config.get("description")
+    else:
+        value = member.frontmatter.get("description") if isinstance(member.frontmatter, dict) else None
+        if not value and isinstance(member.config, dict):
+            value = member.config.get("description")
+    return value.strip() if isinstance(value, str) else ""
+
+
 def check_discoverability(ctx: PluginQualityContext, qs: PluginQualityScoreResult, rules: dict) -> None:
-    return None
+    manifest_file = _manifest_file(ctx)
+    raw = ctx.manifest.get("description")
+    desc = raw.strip() if isinstance(raw, str) else ""
+    min_chars = rules["description_short"].get("min_chars", 20)
+    if not desc:
+        apply_rule(qs, rules, "description_short", "missing", ctx=ctx, file=manifest_file)
+    else:
+        if len(desc) < min_chars:
+            apply_rule(qs, rules, "description_short", f"{len(desc)} < {min_chars} characters", ctx=ctx, file=manifest_file)
+        max_chars = rules["description_long"].get("max_chars", 200)
+        if len(desc) > max_chars:
+            apply_rule(qs, rules, "description_long", f"{len(desc)} > {max_chars} characters", ctx=ctx, file=manifest_file)
+        if _contains_any_term(desc, QUALITY_VAGUE_WORDS):
+            apply_rule(qs, rules, "description_vague", ctx=ctx, file=manifest_file)
+        if _contains_any_term(desc, QUALITY_PERSON_PHRASES):
+            apply_rule(qs, rules, "description_person", ctx=ctx, file=manifest_file)
+
+    undescribed = [
+        member
+        for member in ctx.inventory.selected_components
+        if member.type in {"command", "agent"} and not member.problem and not _component_description(member)
+    ]
+    if undescribed:
+        apply_rule(
+            qs,
+            rules,
+            "component_description_missing",
+            _listed([f"{m.type} {m.name}" for m in undescribed]),
+            ctx=ctx,
+            file=undescribed[0].path or manifest_file,
+            count=len(undescribed),
+        )
+
+    reg_min = rules["mod_registration_description"].get("min_chars", 20)
+    weak = []
+    for mod in ctx.mods:
+        for registration in mod.registrations:
+            if not registration.resolved:
+                qs.unresolved_registrations += 1
+            elif registration.description is None or len(registration.description.strip()) < reg_min:
+                weak.append(registration)
+    if weak:
+        apply_rule(
+            qs,
+            rules,
+            "mod_registration_description",
+            _listed([f"{r.kind} {r.name or '?'}" for r in weak]),
+            ctx=ctx,
+            file=weak[0].file,
+            line=weak[0].line,
+            count=len(weak),
+        )
+
+    if ctx.readme is None:
+        apply_rule(qs, rules, "readme_missing", ctx=ctx)
+
+    silent = [view for view in ctx.handlers if not view.config_has_description and not view.handler.get("statusMessage")]
+    if silent:
+        apply_rule(
+            qs,
+            rules,
+            "hook_status_message_missing",
+            _listed([f"{view.file}:{view.event}" for view in silent]),
+            ctx=ctx,
+            file=silent[0].file,
+        )
 
 
 def check_reliability(ctx: PluginQualityContext, qs: PluginQualityScoreResult, rules: dict) -> None:
