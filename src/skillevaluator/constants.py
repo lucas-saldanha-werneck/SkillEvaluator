@@ -743,3 +743,9 @@ SCAN_ARTIFACT_DIRS = frozenset({"evals", ".evals", "results", ".results", "versi
 PLUGIN_TREE_PRUNED_DIRS = SCAN_EXCLUDED_DIRS - {"__pycache__"}
 
 PLUGIN_TREE_MAX_DISCOVERED_PATHS = 20_000
+
+# Static mod reader (plugin quality score): source files read per hooks file,
+# accepted hooks-module suffixes, and the longest object literal it scans.
+PLUGIN_MOD_MAX_FILES = 200
+PLUGIN_MOD_SOURCE_SUFFIXES = (".js", ".mjs", ".cjs", ".jsx", ".ts", ".mts", ".cts", ".tsx")
+PLUGIN_MOD_LITERAL_MAX_CHARS = 4000

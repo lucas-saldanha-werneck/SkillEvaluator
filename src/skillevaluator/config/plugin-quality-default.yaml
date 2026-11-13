@@ -277,4 +277,4 @@ rules:
     message: "Mod handles every event of a type without a filter"
     suggestion: "Pass a filter object so the handler runs only for the events it needs"
     source: "https://code.claude.com/docs/en/plugins/mods/reference"
-    events: [tool.call]
+    events: [tool.call, ui.render]
