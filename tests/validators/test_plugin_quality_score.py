@@ -629,7 +629,7 @@ def test_skills_only_plugin_passes_on_its_parts(tmp_path):
 
 def test_no_manifest_is_high(tmp_path):
     (tmp_path / "empty").mkdir()
-    result = _validate(tmp_path / "empty")
+    result = _validate(tmp_path / "empty", enforce=True)
     assert result.passed is False and result.findings[0].check_name == "plugin_manifest_missing"
 
 

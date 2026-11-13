@@ -20,13 +20,16 @@ from typing import TYPE_CHECKING, Any
 from skillevaluator.constants import (
     CONTENT_DEDUP_MAX_FILE_BYTES,
     PLUGIN_CONTAINED_MANIFEST_TYPE,
+    PLUGIN_OPENCLAW_MANIFEST_TYPE,
     QUALITY_PERSON_PHRASES,
     QUALITY_VAGUE_WORDS,
 )
 from skillevaluator.plugin_component_risk import iter_hook_handlers
 from skillevaluator.plugin_format_schema import ManifestIssue, validate_manifest_fields
+from skillevaluator.plugin_formats import manifest_identity
 from skillevaluator.plugin_inventory import _finding_rel_path
 from skillevaluator.plugin_manifest import PluginManifestPathError, find_claude_marketplace_entry
+from skillevaluator.plugin_markdown import parse_markdown
 from skillevaluator.plugin_mods import ModInventory, mod_test_files, read_mods
 from skillevaluator.utils.secure_fs import SecurePathError
 from skillevaluator.validators.quality_score import _contains_any_term
@@ -38,16 +41,74 @@ if TYPE_CHECKING:
 
 _NAME_RE = re.compile(r"^[a-z0-9-]+$")
 _PLUGIN_ROOT_PREFIXES = ("${CLAUDE_PLUGIN_ROOT}/", "$CLAUDE_PLUGIN_ROOT/")
+_PLUGIN_ROOT_BARE = ("${CLAUDE_PLUGIN_ROOT}", "$CLAUDE_PLUGIN_ROOT")
 _SCRIPT_SUFFIXES = (".sh", ".bash", ".zsh", ".py", ".js", ".mjs", ".cjs", ".ts", ".mts")
 _SHELL_STATE_RE = re.compile(
     r"(>>?\s*|\btee\s+(-a\s+)?|\bmkdir\s+(-p\s+)?|\btouch\s+|\bcp\s+\S+\s+|\bmv\s+\S+\s+)[\"']?\$\{?CLAUDE_PLUGIN_ROOT\b"
 )
-_CODE_WRITE_RE = re.compile(
-    r"open\([^)]*,\s*(?:mode\s*=\s*)?['\"][^'\"]*[wax+][^'\"]*['\"]|\bwrite(?:File|FileSync)\b|"
-    r"\bappend(?:File|FileSync)\b|\.write_(?:text|bytes)\(|\bcreateWriteStream\b"
-)
+# Formats whose manifest schema has no ``author`` field (OpenClaw: docs.openclaw.ai/plugins/manifest).
+_NO_AUTHOR_MANIFEST_TYPES = frozenset({PLUGIN_OPENCLAW_MANIFEST_TYPE})
+_PLUGIN_ROOT_VAR = "CLAUDE_PLUGIN_ROOT"
+_OPEN_CALL_RE = re.compile(r"(?<![\w.])open\(")
+_WRITE_CALL_RE = re.compile(r"\b(?:writeFile|writeFileSync|appendFile|appendFileSync|createWriteStream)\(")
+_WRITE_METHOD_RE = re.compile(r"\.write_(?:text|bytes)\(")
+_WRITE_MODE_RE = re.compile(r"^[rwaxbt+]+$")
+_MATCH_ALL_MATCHERS = frozenset({None, "", "*", ".*"})
 _TOKEN_TRAILING = ";&|)"
 _MAX_LISTED = 3
+
+
+def _call_args(text: str, start: int) -> list[str]:
+    """Top-level arguments of the call whose ``(`` ends at ``start``; an unclosed call runs to the end of ``text``."""
+    args: list[str] = []
+    depth = 0
+    quote = ""
+    current = start
+    for index in range(start, len(text)):
+        char = text[index]
+        if quote:
+            if char == quote and text[index - 1] != "\\":
+                quote = ""
+        elif char in "'\"`":
+            quote = char
+        elif char in "([{":
+            depth += 1
+        elif char in ")]}":
+            if depth == 0:
+                args.append(text[current:index])
+                return args
+            depth -= 1
+        elif char == "," and depth == 0:
+            args.append(text[current:index])
+            current = index + 1
+    args.append(text[current:])
+    return args
+
+
+def _open_mode_writes(args: list[str]) -> bool:
+    mode = next((a.strip()[5:].strip() for a in args[1:] if a.strip().startswith("mode=")), None)
+    if mode is None and len(args) > 1:
+        mode = args[1].strip()
+    literal = mode[1:-1] if mode and len(mode) >= 2 and mode[0] == mode[-1] and mode[0] in "'\"" else None
+    return bool(literal) and _WRITE_MODE_RE.match(literal) is not None and any(c in literal for c in "wax+")
+
+
+def _writes_under_plugin_root(line: str) -> bool:
+    """Whether one source line writes a file whose destination mentions ``CLAUDE_PLUGIN_ROOT``.
+
+    Reads (``open(path)``, ``open(path, 'r')``) and writes to another directory that merely
+    mention the root elsewhere on the line do not count.
+    """
+    if _PLUGIN_ROOT_VAR not in line:
+        return False
+    for match in _OPEN_CALL_RE.finditer(line):
+        args = _call_args(line, match.end())
+        if _PLUGIN_ROOT_VAR in args[0] and _open_mode_writes(args):
+            return True
+    for match in _WRITE_CALL_RE.finditer(line):
+        if _PLUGIN_ROOT_VAR in _call_args(line, match.end())[0]:
+            return True
+    return any(_PLUGIN_ROOT_VAR in line[: match.start()] for match in _WRITE_METHOD_RE.finditer(line))
 
 
 @dataclass
@@ -101,8 +162,10 @@ def build_context(inventory: PluginInventory, interpreters: tuple[str, ...] = ()
     readable = isinstance(parsed, dict)
     manifest: dict = parsed if isinstance(parsed, dict) else {}
     issues = validate_manifest_fields(selected.manifest_type, manifest) if readable else []
-    name = manifest.get("name") if isinstance(manifest.get("name"), str) else None
-    entry = find_claude_marketplace_entry(inventory.root, plugin_name=name, stop=None)
+    identity = manifest_identity(selected.manifest_type, manifest)
+    entry = find_claude_marketplace_entry(
+        inventory.root, plugin_name=identity if isinstance(identity, str) else None, stop=None
+    )
     claude = selected.manifest_type == PLUGIN_CONTAINED_MANIFEST_TYPE
     handlers: list[HookHandlerView] = []
     hook_members = [m for m in inventory.selected_components if m.type == "hook"]
@@ -171,10 +234,14 @@ def _name_has_term(name: str, terms: list[str]) -> bool:
     return any(re.search(rf"(?<![A-Za-z0-9]){re.escape(term)}(?![A-Za-z0-9])", name, re.IGNORECASE) for term in terms)
 
 
+def plugin_identity(ctx: PluginQualityContext) -> str | None:
+    """The plugin's declared identity (OpenClaw ``id``, otherwise ``name``), or None when absent or not a string."""
+    value = manifest_identity(ctx.inventory.selected_manifest.manifest_type, ctx.manifest)
+    return value if isinstance(value, str) and value else None
+
+
 def _readme_file(ctx: PluginQualityContext) -> str | None:
-    return next(
-        (p.as_posix() for p in ctx.source_files if len(p.parts) == 1 and p.name.lower() == "readme.md"), None
-    )
+    return next((p.as_posix() for p in ctx.source_files if len(p.parts) == 1 and p.name.lower() == "readme.md"), None)
 
 
 def _manifest_file(ctx: PluginQualityContext) -> str:
@@ -228,8 +295,9 @@ def _check_manifest(ctx: PluginQualityContext, qs: PluginQualityScoreResult, rul
             file=_finding_file(ctx, outside[0].file_path),
         )
 
-    name = ctx.manifest.get("name")
-    schema_flagged_name = any(issue.field == "name" and issue.level == "error" for issue in ctx.manifest_issues)
+    name = plugin_identity(ctx)
+    identity_field = "id" if ctx.inventory.selected_manifest.manifest_type == PLUGIN_OPENCLAW_MANIFEST_TYPE else "name"
+    schema_flagged_name = any(issue.field == identity_field and issue.level == "error" for issue in ctx.manifest_issues)
     if isinstance(name, str) and name:
         if not _NAME_RE.match(name) and not schema_flagged_name:
             apply_rule(qs, rules, "name_format", repr(name), ctx=ctx, file=manifest_file)
@@ -237,7 +305,10 @@ def _check_manifest(ctx: PluginQualityContext, qs: PluginQualityScoreResult, rul
             apply_rule(qs, rules, "name_reserved", repr(name), ctx=ctx, file=manifest_file)
 
     entry = ctx.marketplace_entry or {}
-    if not ctx.manifest.get("author") and not entry.get("author"):
+    if ctx.inventory.selected_manifest.manifest_type in _NO_AUTHOR_MANIFEST_TYPES:
+        if "author_missing" not in qs.not_applicable:
+            qs.not_applicable.append("author_missing")
+    elif not ctx.manifest.get("author") and not entry.get("author"):
         apply_rule(qs, rules, "author_missing", ctx=ctx, file=manifest_file)
     if not ctx.manifest.get("version") and not entry.get("version"):
         apply_rule(qs, rules, "version_missing", ctx=ctx, file=manifest_file)
@@ -287,13 +358,24 @@ def _scripts_from_tokens(tokens: list[str], ctx: PluginQualityContext) -> list[t
     has_interpreter = posixpath.basename(tokens[0]) in interpreters
     files = set(ctx.source_files)
     found: list[tuple[PurePosixPath, bool, bool]] = []
-    for token in tokens:
+    cd_dir: str | None = None  # plugin-relative directory after ``cd ${CLAUDE_PLUGIN_ROOT}[/sub]``
+    for index, token in enumerate(tokens):
+        if token == "cd" and index + 1 < len(tokens):
+            target = tokens[index + 1].rstrip(_TOKEN_TRAILING)
+            if target in _PLUGIN_ROOT_BARE:
+                cd_dir = "."
+            elif target.startswith(_PLUGIN_ROOT_PREFIXES):
+                cd_dir = posixpath.normpath(target.split("/", 1)[1])
+            continue
         token = token.rstrip(_TOKEN_TRAILING)
         via_root = token.startswith(_PLUGIN_ROOT_PREFIXES)
         if via_root:
             token = token.split("/", 1)[1]
         elif "$" in token or token.startswith(("/", "~")):
             continue
+        elif cd_dir is not None:
+            token = posixpath.join(cd_dir, token)
+            via_root = True
         rel = posixpath.normpath(token)
         if rel.startswith("../") or rel in {".", ".."}:
             continue
@@ -332,7 +414,7 @@ def _state_write_line(text: str, suffix: str) -> int | None:
         if suffix in {".sh", ".bash", ".zsh", ""}:
             if _SHELL_STATE_RE.search(line):
                 return number
-        elif "CLAUDE_PLUGIN_ROOT" in line and _CODE_WRITE_RE.search(line):
+        elif _writes_under_plugin_root(line):
             return number
     return None
 
@@ -342,6 +424,8 @@ def _check_hooks_and_mods(ctx: PluginQualityContext, qs: PluginQualityScoreResul
     for member in ctx.inventory.selected_components:
         if member.type != "hook" or member.path is None or member.path == selected:
             continue
+        if "#hooks" in str(member.path):  # SKILL.md / command frontmatter: the event map itself, no envelope
+            continue
         config = member.config
         if isinstance(config, dict) and "hooks" not in config and "modules" not in config:
             apply_rule(qs, rules, "hooks_file_unwrapped", str(member.path), ctx=ctx, file=str(member.path))
@@ -349,24 +433,32 @@ def _check_hooks_and_mods(ctx: PluginQualityContext, qs: PluginQualityScoreResul
     unknown = [
         record
         for record in ctx.inventory.hook_records
-        if "unknown_event" in record.risk_flags or record.handler_type == "invalid"
+        if "unknown_event" in record.risk_flags or record.handler_type in {"invalid", "unknown"}
     ]
     if unknown:
         apply_rule(
             qs,
             rules,
             "hook_event_unknown",
-            _listed([f"{r.event} ({r.handler_type})" if r.handler_type == "invalid" else r.event for r in unknown]),
+            _listed(
+                [
+                    f"{r.event} ({r.handler_type})" if r.handler_type in {"invalid", "unknown"} else r.event
+                    for r in unknown
+                ]
+            ),
             ctx=ctx,
             file=unknown[0].file or None,
         )
 
-    relative = [path.as_posix() for path, via_root, _interp in _hook_scripts(ctx) if not via_root]
+    relative: list[str] = []
+    first_file: str | None = None
+    for view in _command_handlers(ctx):
+        for path, via_root, _interp in hook_handler_scripts(view.handler, ctx):
+            if not via_root:
+                relative.append(path.as_posix())
+                first_file = first_file or view.file
     if relative:
-        first = next(
-            v for v in _command_handlers(ctx) if any(r in " ".join(handler_tokens(v.handler)) for r in relative)
-        )
-        apply_rule(qs, rules, "hook_without_plugin_root", _listed(relative), ctx=ctx, file=first.file)
+        apply_rule(qs, rules, "hook_without_plugin_root", _listed(relative), ctx=ctx, file=first_file)
 
     writes: list[tuple[str, int]] = []
     for view in _command_handlers(ctx):
@@ -409,6 +501,26 @@ def check_correctness(ctx: PluginQualityContext, qs: PluginQualityScoreResult, r
     _check_hooks_and_mods(ctx, qs, rules)
 
 
+_MIN_FIRST_LINE_CHARS = 10
+
+
+def _first_body_line(member: Any) -> str:
+    """First non-empty line of a command's Markdown body, the description Claude Code falls back to.
+
+    Documented for skills, and commands are skills (code.claude.com/docs/en/skills, "description": "If omitted,
+    uses the first non-empty line of the markdown content"). A code fence or a line shorter than
+    ``_MIN_FIRST_LINE_CHARS`` is not a useful description.
+    """
+    if member.type != "command" or not isinstance(member.text, str):
+        return ""
+    body = parse_markdown(member.text).body
+    line = next((ln.strip() for ln in body.splitlines() if ln.strip()), "")
+    if line.startswith(("```", "~~~")):
+        return ""
+    line = line.lstrip("#").strip()
+    return line if len(line) >= _MIN_FIRST_LINE_CHARS else ""
+
+
 def _component_description(member: Any) -> str:
     if member.path is None and isinstance(member.config, dict):  # command map entry
         value = member.config.get("description")
@@ -416,7 +528,8 @@ def _component_description(member: Any) -> str:
         value = member.frontmatter.get("description") if isinstance(member.frontmatter, dict) else None
         if not value and isinstance(member.config, dict):
             value = member.config.get("description")
-    return value.strip() if isinstance(value, str) else ""
+    described = value.strip() if isinstance(value, str) else ""
+    return described or _first_body_line(member)
 
 
 def check_discoverability(ctx: PluginQualityContext, qs: PluginQualityScoreResult, rules: dict) -> None:
@@ -428,10 +541,14 @@ def check_discoverability(ctx: PluginQualityContext, qs: PluginQualityScoreResul
         apply_rule(qs, rules, "description_short", "missing", ctx=ctx, file=manifest_file)
     else:
         if len(desc) < min_chars:
-            apply_rule(qs, rules, "description_short", f"{len(desc)} < {min_chars} characters", ctx=ctx, file=manifest_file)
+            apply_rule(
+                qs, rules, "description_short", f"{len(desc)} < {min_chars} characters", ctx=ctx, file=manifest_file
+            )
         max_chars = rules["description_long"].get("max_chars", 200)
         if len(desc) > max_chars:
-            apply_rule(qs, rules, "description_long", f"{len(desc)} > {max_chars} characters", ctx=ctx, file=manifest_file)
+            apply_rule(
+                qs, rules, "description_long", f"{len(desc)} > {max_chars} characters", ctx=ctx, file=manifest_file
+            )
         if _contains_any_term(desc, QUALITY_VAGUE_WORDS):
             apply_rule(qs, rules, "description_vague", ctx=ctx, file=manifest_file)
         if _contains_any_term(desc, QUALITY_PERSON_PHRASES):
@@ -476,7 +593,9 @@ def check_discoverability(ctx: PluginQualityContext, qs: PluginQualityScoreResul
     if ctx.readme is None:
         apply_rule(qs, rules, "readme_missing", ctx=ctx)
 
-    silent = [view for view in ctx.handlers if not view.config_has_description and not view.handler.get("statusMessage")]
+    silent = [
+        view for view in ctx.handlers if not view.config_has_description and not view.handler.get("statusMessage")
+    ]
     if silent:
         apply_rule(
             qs,
@@ -629,7 +748,7 @@ def check_efficiency(ctx: PluginQualityContext, qs: PluginQualityScoreResult, ru
 
     # Literal matcher check: matcher_scope fails closed for "all" and would count undecidable matchers too.
     broad_events = set(rules["hook_matcher_broad"].get("events", []))
-    broad = [view for view in ctx.handlers if view.event in broad_events and view.matcher in {None, "", "*"}]
+    broad = [view for view in ctx.handlers if view.event in broad_events and view.matcher in _MATCH_ALL_MATCHERS]
     if broad:
         apply_rule(
             qs,

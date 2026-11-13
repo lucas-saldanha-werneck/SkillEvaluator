@@ -10,6 +10,7 @@ cut-offs, ``--min-score``). Rules and points live in the packaged
 
 from __future__ import annotations
 
+import functools
 from pathlib import Path
 
 from skillevaluator.constants import QUALITY_DEFAULT_MIN_SCORE
@@ -25,12 +26,15 @@ from skillevaluator.validators.plugin_quality_rules import (
     check_efficiency,
     check_reliability,
     component_counts,
+    plugin_identity,
 )
 from skillevaluator.validators.quality_score import QualityScoreValidator
 
-CLAUDE_ONLY_RULES: tuple[str, ...] = tuple(
-    rule_id for rule_id, rule in load_plugin_quality_config().items() if rule["applies_to"] == "claude"
-)
+
+@functools.cache
+def claude_only_rules() -> tuple[str, ...]:
+    """Rule IDs that apply only to Claude Code plugins; the packaged config is read on first use, not at import."""
+    return tuple(rule_id for rule_id, rule in load_plugin_quality_config().items() if rule["applies_to"] == "claude")
 
 
 class PluginQualityScoreValidator(ValidatorBase):
@@ -62,9 +66,8 @@ class PluginQualityScoreValidator(ValidatorBase):
     def score(self, inventory: PluginInventory) -> PluginQualityScoreResult:
         """Score one plugin inventory; never raises on malformed plugin content."""
         ctx = build_context(inventory, tuple(self.rules["script_not_executable"].get("interpreters", ())))
-        name = ctx.manifest.get("name")
         qs = PluginQualityScoreResult(
-            plugin_name=name if isinstance(name, str) else inventory.root.name,
+            plugin_name=plugin_identity(ctx) or inventory.root.name,
             manifest_type=inventory.selected_manifest.manifest_type,
         )
         check_correctness(ctx, qs, self.rules)
@@ -72,7 +75,7 @@ class PluginQualityScoreValidator(ValidatorBase):
         check_reliability(ctx, qs, self.rules)
         check_efficiency(ctx, qs, self.rules)
         if not ctx.claude:
-            for rule_id in CLAUDE_ONLY_RULES:
+            for rule_id in claude_only_rules():
                 if rule_id not in qs.not_applicable:
                     qs.not_applicable.append(rule_id)
         qs.component_counts = component_counts(inventory)
@@ -93,7 +96,7 @@ class PluginQualityScoreValidator(ValidatorBase):
             result.add_finding(
                 Finding(
                     category="PLUGIN_QUALITY",
-                    severity=Severity.HIGH,
+                    severity=Severity.HIGH if self.enforce else Severity.MEDIUM,
                     check_name="plugin_manifest_missing",
                     message="No supported plugin manifest could be safely located.",
                     file_path=str(plugin_path),

@@ -58,9 +58,7 @@ _EXPORT_RES = (
 )
 _REGISTER_PARAM_RES = (
     re.compile(r"\bfunction\s*\*?\s*register\s*\(\s*([A-Za-z_$][\w$]*)"),
-    re.compile(
-        r"\bregister\s*(?::[^=\n]+)?=\s*(?:async\s+)?(?:function\s*\*?\s*\w*\s*)?\(\s*([A-Za-z_$][\w$]*)"
-    ),
+    re.compile(r"\bregister\s*(?::[^=\n]+)?=\s*(?:async\s+)?(?:function\s*\*?\s*\w*\s*)?\(\s*([A-Za-z_$][\w$]*)"),
     re.compile(r"\bregister\s*(?::[^=\n]+)?=\s*(?:async\s+)?([A-Za-z_$][\w$]*)\s*=>"),
 )
 _REGISTRATION_RE = re.compile(r"\$\s*\.\s*(tool|command)\s*\.\s*register\s*\(")
@@ -112,9 +110,7 @@ def _in_node_modules(path: PurePosixPath) -> bool:
 def mod_test_files(source_files: Iterable[PurePosixPath]) -> list[PurePosixPath]:
     """Mod tests (``*.test.ts`` / ``*.test.tsx``) outside ``node_modules``, as ``claude plugin test`` runs them."""
     return [
-        path
-        for path in source_files
-        if path.name.endswith((".test.ts", ".test.tsx")) and not _in_node_modules(path)
+        path for path in source_files if path.name.endswith((".test.ts", ".test.tsx")) and not _in_node_modules(path)
     ]
 
 
@@ -286,11 +282,19 @@ def _register_param(text: str) -> str:
     return "on"
 
 
+_FILTER_VARIABLE_RE = re.compile(r"[A-Za-z_$][\w$.]*\s*,")
+
+
+def _has_filter(text: str, start: int) -> bool:
+    """Whether the argument after the event name is a filter: an object literal, or a variable followed by the handler."""
+    return text[start : start + 1] == "{" or _FILTER_VARIABLE_RE.match(text, start) is not None
+
+
 def _handlers(text: str, rel: str) -> list[ModHandler]:
     param = re.escape(_register_param(text))
     pattern = re.compile(rf"(?<![\w$.]){param}\s*\(\s*(['\"`])([^'\"`\n]+)\1\s*,\s*")
     return [
-        ModHandler(match.group(2), text[match.end() : match.end() + 1] == "{", rel, _line_of(text, match.start()))
+        ModHandler(match.group(2), _has_filter(text, match.end()), rel, _line_of(text, match.start()))
         for match in pattern.finditer(text)
     ]
 
