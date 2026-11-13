@@ -25,7 +25,7 @@ import json
 import os
 import re
 import stat
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
@@ -661,19 +661,13 @@ def _parse_claude_marketplace(
     )
 
 
-def find_claude_marketplace(
-    plugin_root: Path, *, plugin_name: str | None, stop: Path | None
-) -> ClaudeMarketplace | None:
-    """The Claude Code marketplace that lists the plugin at ``plugin_root``, or ``None``.
+def _claude_marketplace_documents(plugin_root: Path, stop: Path | None) -> Iterator[tuple[Path, Any]]:
+    """Yield ``(marketplace_root, parsed_json)`` for each candidate ``marketplace.json``.
 
-    Claude Code resolves a bare dependency name against the marketplace a
-    plugin is installed from. Its manifest is ``.claude-plugin/marketplace.json``
-    in the marketplace root: the plugin root itself, or a parent up to
-    :data:`CLAUDE_MARKETPLACE_SEARCH_LEVELS` levels above it, never above
-    ``stop`` (the repository root). Each file is read bounded through an
-    anchored, no-follow read; a linked, unreadable, or malformed one is
-    skipped. A marketplace counts only when an entry is this plugin: a relative
-    ``source`` that names the plugin root, or else an entry with its name.
+    Looks in the plugin root and up to :data:`CLAUDE_MARKETPLACE_SEARCH_LEVELS`
+    parents, never above ``stop``. Each file is read bounded through an anchored,
+    no-follow read; a linked or non-regular path is skipped, and an unreadable or
+    malformed file yields ``None`` as its data.
     """
     root = Path(os.path.abspath(plugin_root))  # noqa: PTH100 - callers pass a resolved root
     directory = root
@@ -689,12 +683,60 @@ def find_claude_marketplace(
                 data = load_bounded_json(raw.decode("utf-8-sig"))
             except (SecurePathError, OSError, UnicodeError, StructuredDataError, ValueError):
                 data = None
-            marketplace = _parse_claude_marketplace(data, directory, root, plugin_name)
-            if marketplace is not None:
-                return marketplace
+            yield directory, data
         if (stop is not None and directory == stop) or directory.parent == directory:
             break
         directory = directory.parent
+
+
+def find_claude_marketplace(
+    plugin_root: Path, *, plugin_name: str | None, stop: Path | None
+) -> ClaudeMarketplace | None:
+    """The Claude Code marketplace that lists the plugin at ``plugin_root``, or ``None``.
+
+    Claude Code resolves a bare dependency name against the marketplace a
+    plugin is installed from. Its manifest is ``.claude-plugin/marketplace.json``
+    in the marketplace root: the plugin root itself, or a parent up to
+    :data:`CLAUDE_MARKETPLACE_SEARCH_LEVELS` levels above it, never above
+    ``stop`` (the repository root). Each file is read bounded through an
+    anchored, no-follow read; a linked, unreadable, or malformed one is
+    skipped. A marketplace counts only when an entry is this plugin: a relative
+    ``source`` that names the plugin root, or else an entry with its name.
+    """
+    root = Path(os.path.abspath(plugin_root))  # noqa: PTH100 - callers pass a resolved root
+    for directory, data in _claude_marketplace_documents(root, stop):
+        marketplace = _parse_claude_marketplace(data, directory, root, plugin_name)
+        if marketplace is not None:
+            return marketplace
+    return None
+
+
+def find_claude_marketplace_entry(
+    plugin_root: Path, *, plugin_name: str | None, stop: Path | None
+) -> dict[str, Any] | None:
+    """The ``plugins`` entry that describes the plugin at ``plugin_root``, or ``None``.
+
+    Uses the same search and the same matching as :func:`find_claude_marketplace`:
+    an entry whose relative ``source`` names the plugin root, or else (for a
+    non-local source) an entry with the plugin's name.
+    """
+    root = Path(os.path.abspath(plugin_root))  # noqa: PTH100 - callers pass a resolved root
+    for directory, data in _claude_marketplace_documents(root, stop):
+        if not isinstance(data, dict) or not isinstance(data.get("plugins"), list):
+            continue
+        metadata = data.get("metadata")
+        plugin_root_setting = metadata.get("pluginRoot") if isinstance(metadata, dict) else None
+        by_name: dict[str, Any] | None = None
+        for entry in data["plugins"][:CLAUDE_MARKETPLACE_MAX_PLUGINS]:
+            if not isinstance(entry, dict) or not isinstance(entry.get("name"), str):
+                continue
+            folder = _marketplace_source_dir(directory, entry.get("source"), plugin_root_setting)
+            if folder is not None and folder == root:
+                return entry
+            if folder is None and by_name is None and plugin_name is not None and entry["name"] == plugin_name:
+                by_name = entry
+        if by_name is not None:
+            return by_name
     return None
 
 

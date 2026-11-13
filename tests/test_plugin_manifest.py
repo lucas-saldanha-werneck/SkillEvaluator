@@ -11,6 +11,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from tests.validators.plugin_quality_support import make_plugin
 
 from skillevaluator.constants import CONTENT_DEDUP_MAX_DISCOVERED_PATHS
 from skillevaluator.plugin_dependencies import CAUSE_ERROR, CAUSE_LINK, CAUSE_UNSAFE
@@ -18,6 +19,7 @@ from skillevaluator.plugin_manifest import (
     PluginManifestPathError,
     classify_claude_dependency,
     find_claude_marketplace,
+    find_claude_marketplace_entry,
     locate_plugin_manifest,
 )
 
@@ -204,3 +206,35 @@ def test_nul_in_a_source_folder_is_unresolved_instead_of_raising(tmp_path: Path)
     row = _classify(tmp_path, "b")
 
     assert (row.state, row.path, row.cause) == ("unresolved", None, CAUSE_UNSAFE)
+
+
+def test_marketplace_entry_supplies_version_two_levels_up(tmp_path: Path) -> None:
+    market = tmp_path / "market"
+    make_plugin(market / "plugins" / "demo", manifest={"name": "demo"})
+    (market / ".claude-plugin").mkdir(parents=True)
+    (market / ".claude-plugin" / "marketplace.json").write_text(
+        json.dumps(
+            {
+                "name": "m",
+                "plugins": [
+                    {"name": "demo", "source": "./plugins/demo", "version": "1.2.0", "author": {"name": "A"}}
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    entry = find_claude_marketplace_entry(market / "plugins" / "demo", plugin_name="demo", stop=None)
+    assert entry is not None
+    assert entry["version"] == "1.2.0" and entry["author"] == {"name": "A"}
+
+
+def test_marketplace_entry_absent_returns_none(tmp_path: Path) -> None:
+    make_plugin(tmp_path / "solo", manifest={"name": "solo"})
+    assert find_claude_marketplace_entry(tmp_path / "solo", plugin_name="solo", stop=tmp_path) is None
+
+
+def test_marketplace_entry_for_another_folder_is_not_used(tmp_path: Path) -> None:
+    market = tmp_path / "market"
+    make_plugin(market / "plugins" / "demo", manifest={"name": "demo"})
+    _marketplace(market, [{"name": "demo", "source": "./plugins/other", "version": "9.9.9"}])
+    assert find_claude_marketplace_entry(market / "plugins" / "demo", plugin_name="demo", stop=None) is None
