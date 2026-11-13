@@ -50,16 +50,16 @@ Points and parameters below are the packaged defaults from `plugin-quality-defau
 | Rule | Points | Severity | Scope | Fires when | Source |
 | --- | --- | --- | --- | --- | --- |
 | `manifest_invalid` | 15 | error | all formats | The manifest does not parse, or a field fails the format's schema (an `error`-level manifest issue). | [plugins-reference](https://code.claude.com/docs/en/plugins-reference) |
-| `hooks_file_unwrapped` | 15 | error | Claude Code | A hooks `.json` file is an object with neither a top-level `hooks` nor a `modules` key. | [plugins-reference](https://code.claude.com/docs/en/plugins-reference) |
+| `hooks_file_unwrapped` | 15 | error | Claude Code | A hooks `.json` file is an object with neither a top-level `hooks` nor a `modules` key. Hooks written in a skill or command frontmatter are not hooks files and are not checked by this rule. | [plugins-reference](https://code.claude.com/docs/en/plugins-reference) |
 | `component_path_missing` | 15 | error | all formats | A path the manifest declares does not exist in the plugin. | [plugins-reference](https://code.claude.com/docs/en/plugins-reference) |
 | `component_path_outside_root` | 15 | warning | all formats | A declared path is absolute, escapes the plugin root, or does not start with `./`. | [plugins-reference](https://code.claude.com/docs/en/plugins-reference) |
 | `name_format` | 15 | warning | all formats | `name` is not lowercase letters, digits and hyphens (and the schema did not already report the name). | skill: name format |
 | `name_reserved` | 15 | warning | all formats | `name` contains a reserved term (`anthropic`, `claude`) as a segment. | skill: reserved name |
-| `author_missing` | 5 | warning | all formats | No `author` in the manifest or in the plugin's marketplace entry. | skill: author metadata |
+| `author_missing` | 5 | warning | all formats | No `author` in the manifest or in the plugin's marketplace entry. Not applicable to OpenClaw, whose manifest has no `author` field. | skill: author metadata |
 | `version_missing` | 5 | warning | all formats | No `version` in the manifest or in the plugin's marketplace entry. | skill: version metadata |
 | `hook_without_plugin_root` | 10 | warning | Claude Code | A hook `command` names a plugin file by a relative path instead of `${CLAUDE_PLUGIN_ROOT}/...`. | [plugins-reference](https://code.claude.com/docs/en/plugins-reference) |
 | `state_in_plugin_root` | 10 | warning | Claude Code | A hook `command`, or a script it runs, writes under `${CLAUDE_PLUGIN_ROOT}` (redirect, `tee`, `mkdir`, `touch`, `cp`, `mv`, or a write call on the same line). | [plugins-reference](https://code.claude.com/docs/en/plugins-reference) |
-| `hook_event_unknown` | 15 | warning | Claude Code | A hook handler uses an event Claude Code does not document, or an invalid handler type. | [hooks](https://code.claude.com/docs/en/hooks) |
+| `hook_event_unknown` | 15 | warning | Claude Code | A hook handler uses an event Claude Code does not document, or a handler type other than `command`, `http`, `mcp_tool`, `prompt` and `agent`. | [hooks](https://code.claude.com/docs/en/hooks) |
 | `mod_module_invalid` | 15 | error | Claude Code | `modules` is not a list of strings, or a module is missing, outside the plugin, or exports no `register`. | [plugins/mods/reference](https://code.claude.com/docs/en/plugins/mods/reference) |
 
 ### Discoverability (25%)
@@ -70,7 +70,7 @@ Points and parameters below are the packaged defaults from `plugin-quality-defau
 | `description_long` | 5 | info | all formats | The plugin `description` is longer than `max_chars` (200). | skill: description too long |
 | `description_vague` | 15 | warning | all formats | The description uses a vague word (same list as the skill score). | skill: vague description |
 | `description_person` | 15 | warning | all formats | The description is written in first or second person (same list as the skill score). | skill: first/second person description |
-| `component_description_missing` | 10 | warning | all formats | A command or agent has no `description`; 10 points each, at most `cap` (30). | [plugins-reference](https://code.claude.com/docs/en/plugins-reference) |
+| `component_description_missing` | 10 | warning | all formats | A command or agent has no `description`; 10 points each, at most `cap` (30). A command without one is read by Claude Code through the first non-empty line of its body, so a useful first line (10 characters or more, not a code fence) counts as its description. | [plugins-reference](https://code.claude.com/docs/en/plugins-reference) |
 | `mod_registration_description` | 10 | warning | Claude Code | A `$.tool.register` or `$.command.register` call has a literal description that is missing or shorter than 20 characters; 10 points each, at most 30. | [plugins/mods/api](https://code.claude.com/docs/en/plugins/mods/api) |
 | `readme_missing` | 10 | warning | all formats | No `README.md` (any case) at the plugin root. | [plugins-reference](https://code.claude.com/docs/en/plugins-reference) |
 | `hook_status_message_missing` | 5 | info | Claude Code | A hooks config has no top-level `description` and a handler has no `statusMessage`. | [hooks](https://code.claude.com/docs/en/hooks) |
@@ -91,7 +91,7 @@ Points and parameters below are the packaged defaults from `plugin-quality-defau
 | Rule | Points | Severity | Scope | Fires when | Source |
 | --- | --- | --- | --- | --- | --- |
 | `context_cost_high` | 15 | warning | all formats | The always-on context estimate (skill, command and agent descriptions, MCP) is above `max_tokens` (5,000). | skill: token budget |
-| `hook_matcher_broad` | 10 | warning | Claude Code | A `PreToolUse` or `PostToolUse` handler has no matcher, `""` or `"*"`, so it runs on every tool call. | [hooks](https://code.claude.com/docs/en/hooks) |
+| `hook_matcher_broad` | 10 | warning | Claude Code | A `PreToolUse` or `PostToolUse` handler has no matcher, `""`, `"*"` or `".*"`, so it runs on every tool call. | [hooks](https://code.claude.com/docs/en/hooks) |
 | `hook_static_context_large` | 10 | warning | Claude Code | A `SessionStart` or `UserPromptSubmit` command prints more than `max_chars` (2,000) of fixed text (an `echo`/`printf` literal, a heredoc, or `cat` of a plugin file). | [hooks](https://code.claude.com/docs/en/hooks) |
 | `mod_unfiltered_handler` | 5 | info | Claude Code | A mod handles `tool.call` or `ui.render` with no filter object, so it runs for every tool call or every render site. | [plugins/mods/reference](https://code.claude.com/docs/en/plugins/mods/reference) |
 
