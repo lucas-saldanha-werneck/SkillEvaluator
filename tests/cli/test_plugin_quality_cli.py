@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import json
 
-import pytest
 from click.testing import CliRunner
 from tests.validators.plugin_quality_support import GOOD_MANIFEST, make_plugin
 from tests.validators.test_plugin_quality_score import GOOD_SKILL
@@ -16,7 +15,6 @@ from skillevaluator.cli import cli
 from skillevaluator.tier1.commands import run_validation
 
 
-@pytest.mark.xfail(reason="the JSON plugin_quality block is added with the reporters", strict=True)
 def test_validate_plugin_reports_but_does_not_fail_by_default(tmp_path):
     root = make_plugin(tmp_path / "p", manifest=GOOD_MANIFEST, files={"hooks/hooks.json": "{}"})
     r = CliRunner().invoke(

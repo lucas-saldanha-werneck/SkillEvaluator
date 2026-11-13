@@ -317,6 +317,14 @@ class JSONReporter(ReporterBase):
         if quality_results:
             data["quality_summary"] = quality_results
 
+        # Plugin quality score (plugin-quality-check, or the quality step of a plugin run)
+        plugin_quality = next((r for r in results if r.metadata.get("plugin_quality_scores")), None)
+        if plugin_quality is not None:
+            data["plugin_quality"] = {
+                **plugin_quality.metadata["plugin_quality_scores"],
+                "config": plugin_quality.metadata.get("plugin_quality_config"),
+            }
+
         # Findings alone cannot distinguish a completed failing rubric from
         # an unavailable or malformed judge response. Persist the validator's
         # typed execution contract in the machine-readable report.

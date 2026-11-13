@@ -285,6 +285,11 @@ class CLIReporter(ReporterBase):
             skills_list = qs_all or [qs]
             self._print_quality_table(qs, skills_list, grade_colors, console)
 
+        pq = result.metadata.get("plugin_quality_scores") if result.metadata else None
+        if pq and pq.get("dimensions"):
+            grade_colors = {grade: grade_style(grade, status=result_status(result).value) for grade in "ABCDF"}
+            self._print_plugin_quality_table(pq, grade_colors, console)
+
         # LLM rubric evaluation display
         rubric = result.metadata.get("rubric_eval") if result.metadata else None
         if rubric and rubric.get("checks"):
@@ -338,6 +343,47 @@ class CLIReporter(ReporterBase):
         s = d.get("score", 0)
         c = GREEN if s >= 80 else (AMBER if s >= 60 else RED)
         return f"[{c}]{s:.0f}[/{c}]"
+
+    @staticmethod
+    def _print_plugin_quality_table(pq: dict, grade_colors: dict[str, str], console: Console) -> None:
+        """Print the plugin score, its mode, what blocks it, and a row per bundled skill."""
+        score = pq.get("overall_score", 0)
+        grade = str(pq.get("grade", "?"))
+        gc = grade_colors.get(grade, "white")
+        mode = "enforced" if pq.get("enforced") else "advisory"
+        console.print(f"\n  [{gc}]Plugin: {score:.1f}/100 (Grade: {escape_markup(grade)})[/{gc}] [dim]· {mode}[/dim]")
+        blocking = [str(item) for item in pq.get("blocking") or []]
+        if blocking:
+            label = "Blocking" if pq.get("enforced") else "Would block"
+            console.print(f"  [dim]{label}:[/dim] {escape_markup('; '.join(blocking))}")
+
+        table = Table(title="Plugin Quality Scores", border_style=FAINT, show_header=True)
+        table.add_column("Component", style="bold")
+        table.add_column("Grade", justify="center")
+        table.add_column("Score", justify="right")
+        table.add_column("Correctness", justify="right")
+        table.add_column("Discoverability", justify="right")
+        table.add_column("Reliability", justify="right")
+        table.add_column("Efficiency", justify="right")
+        rows = [(f"plugin {pq.get('plugin_name', '?')}", pq)]
+        rows += [(f"skill {skill.get('skill_name', '?')}", skill) for skill in pq.get("skills") or []]
+        for label, entry in rows:
+            egrade = str(entry.get("grade", "?"))
+            egc = grade_colors.get(egrade, "white")
+            dims = entry.get("dimensions", {})
+            table.add_row(
+                escape_markup(label),
+                f"[{egc}]{escape_markup(egrade)}[/{egc}]",
+                f"[{egc}]{entry.get('overall_score', 0):.1f}[/{egc}]",
+                CLIReporter._score_cell(dims, "correctness"),
+                CLIReporter._score_cell(dims, "discoverability"),
+                CLIReporter._score_cell(dims, "reliability"),
+                CLIReporter._score_cell(dims, "efficiency"),
+            )
+        console.print(table)
+        not_applicable = [str(item) for item in pq.get("not_applicable") or []]
+        if not_applicable:
+            console.print(f"  [dim]Not applicable:[/dim] {escape_markup(', '.join(not_applicable))}")
 
     @staticmethod
     def _print_quality_table(
