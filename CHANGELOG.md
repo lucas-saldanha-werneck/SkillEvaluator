@@ -489,6 +489,13 @@ All notable changes to SkillEvaluator are documented in this file.
   Tier 3 judge. A fallback equal to the request model is no longer sent. The
   default is unchanged. The Harbor verifier receives the variable like
   `LLM_JUDGE_FALLBACK_MODELS`; its Bedrock refusal retry uses it too.
+- Code Risk Analysis no longer marks Semgrep incomplete for a `PartialParsing`
+  error, where Semgrep could not parse part of a file and scanned the rest. It
+  adds a warning that names the file and line (valid bash such as
+  `exec 3<>"/dev/tcp/127.0.0.1/$PORT"` triggers one), and the success message
+  says how many files were only partly parsed. Any other Semgrep error type
+  keeps the scan incomplete. Every Semgrep error is now reported in full, not
+  only the first three cut at 100 characters. Refs #463.
 
 - Configure CLI stdout to replace characters that its encoding cannot
   represent, so reports and root help complete on legacy Windows code pages.
@@ -662,6 +669,14 @@ All notable changes to SkillEvaluator are documented in this file.
   Tier 3 version, such as `--tiers 1`, now records the evaluator version
   instead of `Evaluator version: not recorded (legacy or non-live result)`; a
   version recorded by a Tier 3 run still wins.
+
+- `skillevaluator tier1 .` and `tier2 .`, run from inside the skill folder, name
+  the skill in the JSON `skills` and `contributors` lists, as `tier1 <folder>`
+  does. The report took the name from the path as typed, which is empty for
+  `.`, so a clean run with a narrowed check list, such as `--checks pii`,
+  listed no skill or one skill per check ID. The JSON that CI retains records
+  the skill's path relative to the repository root as `target_path`, no longer
+  the absolute path of the runner's workspace.
 
 - Tier 3 improvement recommendations respect each case's expected skill routing:
   passing negative controls no longer inherit activation-loss advice from positive
@@ -1097,7 +1112,6 @@ All notable changes to SkillEvaluator are documented in this file.
   every required check passes. A run with a failed required check, such as one
   with a `destructive_command` finding, already gets FAIL from that check (see
   Changed).
-
 
 ## 0.8.0 - 2026-11-05
 
