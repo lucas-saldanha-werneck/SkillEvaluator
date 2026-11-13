@@ -58,8 +58,10 @@ _EXPORT_RES = (
 )
 _REGISTER_PARAM_RES = (
     re.compile(r"\bfunction\s*\*?\s*register\s*\(\s*([A-Za-z_$][\w$]*)"),
-    re.compile(r"\bregister\s*=\s*(?:async\s+)?(?:function\s*\*?\s*\w*\s*)?\(\s*([A-Za-z_$][\w$]*)"),
-    re.compile(r"\bregister\s*=\s*(?:async\s+)?([A-Za-z_$][\w$]*)\s*=>"),
+    re.compile(
+        r"\bregister\s*(?::[^=\n]+)?=\s*(?:async\s+)?(?:function\s*\*?\s*\w*\s*)?\(\s*([A-Za-z_$][\w$]*)"
+    ),
+    re.compile(r"\bregister\s*(?::[^=\n]+)?=\s*(?:async\s+)?([A-Za-z_$][\w$]*)\s*=>"),
 )
 _REGISTRATION_RE = re.compile(r"\$\s*\.\s*(tool|command)\s*\.\s*register\s*\(")
 

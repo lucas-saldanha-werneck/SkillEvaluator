@@ -250,10 +250,37 @@ def hook_command_scripts(command: str, ctx: PluginQualityContext) -> list[tuple[
     names a file in the plugin's source tree. ``has_interpreter`` is true when
     the command's first word (its basename) is a listed interpreter.
     """
+    return _scripts_from_tokens(_split(command), ctx)
+
+
+def _split(command: str) -> list[str]:
     try:
-        tokens = shlex.split(command)
+        return shlex.split(command)
     except ValueError:
-        tokens = command.split()
+        return command.split()
+
+
+def handler_tokens(handler: dict) -> list[str]:
+    """The argument vector a command hook runs.
+
+    Exec form (``args`` present) spawns ``command`` directly with ``args``; shell form
+    splits ``command`` like a shell would.
+    """
+    command = handler.get("command")
+    if not isinstance(command, str):
+        return []
+    args = handler.get("args")
+    if isinstance(args, list):
+        return [command, *(str(arg) for arg in args)]
+    return _split(command)
+
+
+def hook_handler_scripts(handler: dict, ctx: PluginQualityContext) -> list[tuple[PurePosixPath, bool, bool]]:
+    """:func:`hook_command_scripts` for a handler, in shell form or exec form (``command`` + ``args``)."""
+    return _scripts_from_tokens(handler_tokens(handler), ctx)
+
+
+def _scripts_from_tokens(tokens: list[str], ctx: PluginQualityContext) -> list[tuple[PurePosixPath, bool, bool]]:
     if not tokens:
         return []
     interpreters = set(ctx.interpreters)
@@ -287,7 +314,7 @@ def _command_handlers(ctx: PluginQualityContext) -> list[HookHandlerView]:
 def _hook_scripts(ctx: PluginQualityContext) -> list[tuple[PurePosixPath, bool, bool]]:
     scripts: list[tuple[PurePosixPath, bool, bool]] = []
     for view in _command_handlers(ctx):
-        for item in hook_command_scripts(view.handler["command"], ctx):
+        for item in hook_handler_scripts(view.handler, ctx):
             if item not in scripts:
                 scripts.append(item)
     return scripts
@@ -336,7 +363,9 @@ def _check_hooks_and_mods(ctx: PluginQualityContext, qs: PluginQualityScoreResul
 
     relative = [path.as_posix() for path, via_root, _interp in _hook_scripts(ctx) if not via_root]
     if relative:
-        first = next(v for v in _command_handlers(ctx) if any(r in v.handler["command"] for r in relative))
+        first = next(
+            v for v in _command_handlers(ctx) if any(r in " ".join(handler_tokens(v.handler)) for r in relative)
+        )
         apply_rule(qs, rules, "hook_without_plugin_root", _listed(relative), ctx=ctx, file=first.file)
 
     writes: list[tuple[str, int]] = []
@@ -490,11 +519,7 @@ def _direct_scripts(ctx: PluginQualityContext) -> list[PurePosixPath]:
     """Plugin files a hook command runs as its first word, without an interpreter in front."""
     direct: list[PurePosixPath] = []
     for view in _command_handlers(ctx):
-        command = view.handler["command"]
-        try:
-            first = shlex.split(command)[:1]
-        except ValueError:
-            first = command.split()[:1]
+        first = handler_tokens(view.handler)[:1]
         if not first:
             continue
         for path, _via_root, has_interpreter in hook_command_scripts(first[0], ctx):
@@ -570,16 +595,17 @@ def check_reliability(ctx: PluginQualityContext, qs: PluginQualityScoreResult, r
 _HEREDOC_RE = re.compile(r"<<-?\s*['\"]?(\w+)['\"]?[^\n]*\n(.*?)\n\s*\1\b", re.DOTALL)
 
 
-def static_output_chars(command: str, ctx: PluginQualityContext) -> int:
+def static_output_chars(command: str, ctx: PluginQualityContext, args: list[str] | None = None) -> int:
     """Largest fixed text a hook command prints: echo/printf literals, a heredoc, or ``cat`` of a plugin file.
 
     Dynamic output (anything with ``$`` or backticks, or a script) counts as 0.
     """
-    sizes = [len(match.group(2)) for match in _HEREDOC_RE.finditer(command)]
-    try:
-        words = shlex.split(command)
-    except ValueError:
-        words = []
+    if args is not None:  # exec form: no shell, so no heredoc
+        sizes: list[int] = []
+        words = [command, *args]
+    else:
+        sizes = [len(match.group(2)) for match in _HEREDOC_RE.finditer(command)]
+        words = _split(command)
     if len(words) >= 2 and words[0] in {"echo", "printf"} and not any("$" in w or "`" in w for w in words[1:]):
         sizes.append(len(" ".join(word for word in words[1:] if not word.startswith("-"))))
     if len(words) == 2 and words[0] == "cat":
@@ -623,7 +649,10 @@ def check_efficiency(ctx: PluginQualityContext, qs: PluginQualityScoreResult, ru
     for view in _command_handlers(ctx):
         if view.event not in static_events:
             continue
-        size = static_output_chars(view.handler["command"], ctx)
+        args = view.handler.get("args")
+        size = static_output_chars(
+            view.handler["command"], ctx, [str(a) for a in args] if isinstance(args, list) else None
+        )
         if size > max_chars:
             large.append((view, size))
     if large:

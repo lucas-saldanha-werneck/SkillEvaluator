@@ -631,3 +631,78 @@ def test_no_manifest_is_high(tmp_path):
     (tmp_path / "empty").mkdir()
     result = _validate(tmp_path / "empty")
     assert result.passed is False and result.findings[0].check_name == "plugin_manifest_missing"
+
+
+# --- Exec form (command + args) ----------------------------------------------------
+
+
+def test_exec_form_args_are_read_like_the_command(tmp_path):
+    qs = _score(
+        make_plugin(
+            tmp_path / "p",
+            manifest=GOOD_MANIFEST,
+            files={
+                "README.md": "# p",
+                "hooks/hooks.json": json.dumps(
+                    {
+                        "description": "d",
+                        "hooks": {
+                            "Stop": [
+                                {
+                                    "hooks": [
+                                        {"type": "command", "command": "bash", "args": ["scripts/a.sh"], "timeout": 5},
+                                        {
+                                            "type": "command",
+                                            "command": "python3",
+                                            "args": ["${CLAUDE_PLUGIN_ROOT}/b.py"],
+                                            "timeout": 5,
+                                        },
+                                    ]
+                                }
+                            ]
+                        },
+                    }
+                ),
+                "scripts/a.sh": "set -e\necho ok\n",
+                "b.py": "print('no handling')\n",
+            },
+        )
+    )
+    by_id = {i.rule_id: i for i in qs.all_issues}
+    assert "scripts/a.sh" in by_id["hook_without_plugin_root"].message
+    assert "b.py" in by_id["hook_script_error_handling"].message
+    assert "script_not_executable" not in by_id
+
+
+def test_exec_form_direct_script_needs_execute_bit(tmp_path):
+    ids = _ids(
+        _score(
+            make_plugin(
+                tmp_path / "p",
+                manifest=GOOD_MANIFEST,
+                files={
+                    "hooks/hooks.json": json.dumps(
+                        {
+                            "description": "d",
+                            "hooks": {
+                                "Stop": [
+                                    {
+                                        "hooks": [
+                                            {
+                                                "type": "command",
+                                                "command": "${CLAUDE_PLUGIN_ROOT}/run.sh",
+                                                "args": ["x"],
+                                                "timeout": 5,
+                                            }
+                                        ]
+                                    }
+                                ]
+                            },
+                        }
+                    ),
+                    "run.sh": "set -e\n",
+                },
+            )
+        )
+    )
+    assert "script_not_executable" in ids

@@ -127,3 +127,12 @@ def test_mod_test_files_found(tmp_path):
     (root / "tests" / "a.test.ts").write_text("test('x', () => {})", encoding="utf-8")
     inv = plugin_inventory_for_root(root)
     assert mod_test_files(inv.source_files) == [PurePosixPath("tests/a.test.ts")]
+
+
+def test_typed_register_declaration_names_the_handler_parameter(tmp_path):
+    root = _mod(
+        tmp_path,
+        "export const register: Register = hook => {\n hook('tool.call', async ($, e, next) => next(e))\n}\n",
+    )
+    [mod] = _read(root)
+    assert mod.module_problems == [] and [(h.event, h.filtered) for h in mod.handlers] == [("tool.call", False)]
