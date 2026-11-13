@@ -1,0 +1,171 @@
+---
+title: "Plugin Quality Score"
+description: "A 0-100 score and A-F grade for a plugin's manifest, commands, agents, hooks and mods, on the same scale as the skill quality score."
+---
+
+The skill quality score grades a `SKILL.md`. The plugin quality score grades the parts a plugin adds around its skills: the manifest and its marketplace entry, commands, agents, hooks, mods (hooks modules), and the always-on context the plugin loads. It reads files only. It runs no plugin code, calls no LLM, and needs no API key.
+
+Bundled skills keep their own skill quality score. The plugin score does not average them in; a plugin passes only when each bundled skill also passes on its own.
+
+## Run it
+
+```bash title="Score one plugin"
+skillevaluator plugin-quality-check ./my-plugin
+```
+
+`plugin-quality-check` (also `tier1 plugin-quality-check`) exits non-zero when the plugin does not pass.
+
+Inside `validate --type plugin`, the `quality` check runs the plugin score instead of being skipped. There it is **advisory by default**: the score, the grade and every deduction are reported, but they do not change the exit code. Add `--enforce-plugin-quality` to make the `quality` check fail when the plugin does not pass. `--checks quality` and `--skip quality` select it as before.
+
+```bash title="Advisory in a full run, enforced on request"
+skillevaluator validate ./my-plugin --type plugin
+skillevaluator validate ./my-plugin --type plugin --enforce-plugin-quality
+```
+
+## Same scale as the skill score
+
+| Dimension | Weight | What it covers for a plugin |
+| --- | --- | --- |
+| Correctness | 35% | Manifest validity, component paths, name, author and version, hook wiring, mod modules |
+| Discoverability | 25% | Plugin description, command and agent descriptions, mod tool and command descriptions, README, hook transparency |
+| Reliability | 25% | Hook script error handling, timeouts, execute bits, tests, mod tests, README limitations |
+| Efficiency | 15% | Always-on context, hooks that run on every tool call, large fixed hook output, unfiltered mod handlers |
+
+Each dimension starts at 100 and loses fixed points per rule, never going below 0. The score is the weighted sum, rounded to one decimal. Grades are A for at least 90, B for at least 80, C for at least 70, D for at least 60, and F below 60, as for skills.
+
+A plugin **passes** when all three hold:
+
+1. its score is at least `--min-score` (default 70);
+2. no rule with severity `error` fired;
+3. every bundled skill passes its own skill quality score.
+
+Each reason a plugin does not pass is listed in `blocking`, for example `score 64.0 < 70`, `error rule: mod_module_invalid`, or `bundled skill 'x' failed quality`. In advisory mode, `error` deductions are reported as MEDIUM findings marked `would_block`; with `--enforce-plugin-quality` they are HIGH and each blocking reason fails the check.
+
+## Rules
+
+Points and parameters below are the packaged defaults from `plugin-quality-default.yaml`. A rule that deducts "each" deducts its points per item, up to its `cap`, as one finding. Every rule names its source: the Claude Code documentation page it follows, or the skill quality rule it mirrors.
+
+### Correctness (35%)
+
+| Rule | Points | Severity | Scope | Fires when | Source |
+| --- | --- | --- | --- | --- | --- |
+| `manifest_invalid` | 15 | error | all formats | The manifest does not parse, or a field fails the format's schema (an `error`-level manifest issue). | [plugins-reference](https://code.claude.com/docs/en/plugins-reference) |
+| `hooks_file_unwrapped` | 15 | error | Claude Code | A hooks `.json` file is an object with neither a top-level `hooks` nor a `modules` key. | [plugins-reference](https://code.claude.com/docs/en/plugins-reference) |
+| `component_path_missing` | 15 | error | all formats | A path the manifest declares does not exist in the plugin. | [plugins-reference](https://code.claude.com/docs/en/plugins-reference) |
+| `component_path_outside_root` | 15 | warning | all formats | A declared path is absolute, escapes the plugin root, or does not start with `./`. | [plugins-reference](https://code.claude.com/docs/en/plugins-reference) |
+| `name_format` | 15 | warning | all formats | `name` is not lowercase letters, digits and hyphens (and the schema did not already report the name). | skill: name format |
+| `name_reserved` | 15 | warning | all formats | `name` contains a reserved term (`anthropic`, `claude`) as a segment. | skill: reserved name |
+| `author_missing` | 5 | warning | all formats | No `author` in the manifest or in the plugin's marketplace entry. | skill: author metadata |
+| `version_missing` | 5 | warning | all formats | No `version` in the manifest or in the plugin's marketplace entry. | skill: version metadata |
+| `hook_without_plugin_root` | 10 | warning | Claude Code | A hook `command` names a plugin file by a relative path instead of `${CLAUDE_PLUGIN_ROOT}/...`. | [plugins-reference](https://code.claude.com/docs/en/plugins-reference) |
+| `state_in_plugin_root` | 10 | warning | Claude Code | A hook `command`, or a script it runs, writes under `${CLAUDE_PLUGIN_ROOT}` (redirect, `tee`, `mkdir`, `touch`, `cp`, `mv`, or a write call on the same line). | [plugins-reference](https://code.claude.com/docs/en/plugins-reference) |
+| `hook_event_unknown` | 15 | warning | Claude Code | A hook handler uses an event Claude Code does not document, or an invalid handler type. | [hooks](https://code.claude.com/docs/en/hooks) |
+| `mod_module_invalid` | 15 | error | Claude Code | `modules` is not a list of strings, or a module is missing, outside the plugin, or exports no `register`. | [plugins/mods/reference](https://code.claude.com/docs/en/plugins/mods/reference) |
+
+### Discoverability (25%)
+
+| Rule | Points | Severity | Scope | Fires when | Source |
+| --- | --- | --- | --- | --- | --- |
+| `description_short` | 20 | warning | all formats | The plugin `description` is missing or shorter than `min_chars` (20). | skill: description too short |
+| `description_long` | 5 | info | all formats | The plugin `description` is longer than `max_chars` (200). | skill: description too long |
+| `description_vague` | 15 | warning | all formats | The description uses a vague word (same list as the skill score). | skill: vague description |
+| `description_person` | 15 | warning | all formats | The description is written in first or second person (same list as the skill score). | skill: first/second person description |
+| `component_description_missing` | 10 | warning | all formats | A command or agent has no `description`; 10 points each, at most `cap` (30). | [plugins-reference](https://code.claude.com/docs/en/plugins-reference) |
+| `mod_registration_description` | 10 | warning | Claude Code | A `$.tool.register` or `$.command.register` call has a literal description that is missing or shorter than 20 characters; 10 points each, at most 30. | [plugins/mods/api](https://code.claude.com/docs/en/plugins/mods/api) |
+| `readme_missing` | 10 | warning | all formats | No `README.md` (any case) at the plugin root. | [plugins-reference](https://code.claude.com/docs/en/plugins-reference) |
+| `hook_status_message_missing` | 5 | info | Claude Code | A hooks config has no top-level `description` and a handler has no `statusMessage`. | [hooks](https://code.claude.com/docs/en/hooks) |
+
+### Reliability (25%)
+
+| Rule | Points | Severity | Scope | Fires when | Source |
+| --- | --- | --- | --- | --- | --- |
+| `hook_script_error_handling` | 5 | info | Claude Code | A script a hook runs has none of the `markers` for its language (`set -e`, `trap`, `try:`, `.catch(`, ...). | skill: scripts may lack error handling |
+| `hook_timeout_missing` | 5 | info | Claude Code | A `command` hook handler has no `timeout`. | [hooks](https://code.claude.com/docs/en/hooks) |
+| `script_not_executable` | 10 | warning | Claude Code | A hook runs a plugin script as its first word, with no interpreter in front, and the file has no execute bit. | [hooks](https://code.claude.com/docs/en/hooks) |
+| `tests_missing` | 10 | warning | all formats | No file matches the test `patterns`. Not applied to mods, which use `mod_tests_missing` instead. | skill: validation |
+| `mod_tests_missing` | 10 | warning | Claude Code | The plugin has `modules` and no `*.test.ts` or `*.test.tsx` file. | [plugins/mods/test](https://code.claude.com/docs/en/plugins/mods/test) |
+| `readme_limitations_missing` | 5 | info | all formats | The README has none of the `headings` (Limitations, Known Issues, Troubleshooting, FAQ, ...). | skill: limitations/troubleshooting sections |
+
+### Efficiency (15%)
+
+| Rule | Points | Severity | Scope | Fires when | Source |
+| --- | --- | --- | --- | --- | --- |
+| `context_cost_high` | 15 | warning | all formats | The always-on context estimate (skill, command and agent descriptions, MCP) is above `max_tokens` (5,000). | skill: token budget |
+| `hook_matcher_broad` | 10 | warning | Claude Code | A `PreToolUse` or `PostToolUse` handler has no matcher, `""` or `"*"`, so it runs on every tool call. | [hooks](https://code.claude.com/docs/en/hooks) |
+| `hook_static_context_large` | 10 | warning | Claude Code | A `SessionStart` or `UserPromptSubmit` command prints more than `max_chars` (2,000) of fixed text (an `echo`/`printf` literal, a heredoc, or `cat` of a plugin file). | [hooks](https://code.claude.com/docs/en/hooks) |
+| `mod_unfiltered_handler` | 5 | info | Claude Code | A mod handles `tool.call` or `ui.render` with no filter object, so it runs for every tool call or every render site. | [plugins/mods/reference](https://code.claude.com/docs/en/plugins/mods/reference) |
+
+## Plugin formats
+
+Rules marked "all formats" apply to every manifest SkillEvaluator reads (Claude Code, Agent Plugins, Codex, Cursor, OpenClaw). Rules marked "Claude Code" cover features documented only for Claude Code plugins: hooks files, mods, and `${CLAUDE_PLUGIN_ROOT}`. For any other manifest these rules do not run, and the report lists them in `not_applicable`.
+
+The author and version rules also read the plugin's entry in a Claude Code `marketplace.json` found at the plugin root or up to two folders above it, so a plugin that keeps its version only in the marketplace is not penalized. A missing `keywords` field is never penalized.
+
+## Mods
+
+A mod is a plugin whose `hooks.json` lists hooks modules under `modules` (see the [mods reference](https://code.claude.com/docs/en/plugins/mods/reference)). The score reads mods statically:
+
+- each module path is resolved relative to the hooks file, must stay inside the plugin, and must export a named `register` function (`export function register`, `export const register`, or `export { register }`);
+- `$.tool.register({...})` and `$.command.register({...})` calls in the mod's source files are cut out with a scanner that respects strings, comments and braces, and their top-level `name` and `description` are read;
+- a description counts only when it is a string literal, or literals joined with `+`. A variable, a call, or a template literal with a `${}` placeholder is never scored; it is counted in `metrics.unresolved_registrations` instead;
+- handlers are read from the `register(on)` parameter: `on('tool.call', { tool: 'Bash' }, hook)` is filtered, `on('tool.call', hook)` is not.
+
+Hooks files that hold both `hooks` and `modules` are read both ways.
+
+## Configure the rules
+
+`--plugin-quality-config PATH` merges a YAML file over the packaged rules. List any subset of rule IDs and keys; omitted keys keep their packaged values. Lists replace the packaged list. `points: 0` turns a rule off. `dimension` and `applies_to` cannot change. An unknown rule or key, a negative point value, or an unknown severity is a usage error.
+
+```yaml title="plugin-quality.yaml"
+rules:
+  readme_missing:
+    points: 0
+  context_cost_high:
+    max_tokens: 8000
+  hook_matcher_broad:
+    events: [PreToolUse]
+```
+
+The report records the file name and a digest of the rules the file declares, beside `--min-score`, under `plugin_quality.config`. `--quality-config` still configures the skill score used for bundled skills.
+
+## What the score does not cover
+
+Security is not scored. Hook commands, MCP servers, secrets and code risk stay in the security gates (SkillSpector, Code Risk, Secrets Detection), as they do for skills.
+
+### Future rules
+
+- **Invalid hook matcher.** Claude Code matchers are JavaScript regular expressions; Python cannot decide all of them statically, so an invalid matcher is not scored yet.
+
+## Report
+
+The JSON report carries a `plugin_quality` block beside `quality_summary`:
+
+```json title="plugin_quality (abridged)"
+{
+  "overall_score": 90.0,
+  "grade": "A",
+  "plugin_name": "table-tools",
+  "manifest_type": "claude_plugin_json",
+  "dimensions": {
+    "correctness": {"score": 100.0, "weight": 0.35, "issues_count": 0, "issues": []},
+    "discoverability": {"score": 90.0, "weight": 0.25, "issues_count": 1, "issues": [
+      {"severity": "warning", "message": "No README.md at the plugin root", "deduction": 10,
+       "suggestion": "Add a README.md that explains what the plugin does and how to install it",
+       "rule_id": "readme_missing"}
+    ]},
+    "reliability": {"score": 70.0, "weight": 0.25, "issues_count": 2, "issues": ["..."]},
+    "efficiency": {"score": 100.0, "weight": 0.15, "issues_count": 0, "issues": []}
+  },
+  "not_applicable": [],
+  "metrics": {"always_on_tokens": 120, "component_counts": {"command": 2}, "unresolved_registrations": 0},
+  "min_score": 70,
+  "enforced": false,
+  "passed": true,
+  "blocking": [],
+  "skill_count": 1,
+  "skills": [{"skill_name": "csv-tables", "overall_score": 92.5, "grade": "A", "passed": true}],
+  "config": {"source": "packaged", "file": null, "digest": "sha256:...", "min_score": 70}
+}
+```
+
+The console shows `Plugin: 90.0/100 (Grade: A) · advisory`, a `Would block:` (or `Blocking:`) line when the plugin does not pass, a table with one row for the plugin and one per bundled skill, and the `Not applicable:` rules.

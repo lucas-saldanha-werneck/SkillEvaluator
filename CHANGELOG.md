@@ -6,6 +6,17 @@ All notable changes to SkillEvaluator are documented in this file.
 
 ### Added
 
+- Plugin quality score: `plugin-quality-check` (and the `quality` check of
+  `validate --type plugin`) grades a plugin's manifest, marketplace entry,
+  commands, agents, hooks, mods and always-on context on the skill quality
+  scale (four dimensions, same weights, A-F grades, `--min-score`). Mods are
+  read statically (`modules`, `register` export, literal `$.tool.register` /
+  `$.command.register` descriptions, unfiltered handlers). A plugin passes only
+  when its score reaches the minimum, no `error` rule fires, and every bundled
+  skill passes its own skill score. Inside `validate` it is advisory unless
+  `--enforce-plugin-quality` is set. Rules, points and sources live in the
+  packaged `plugin-quality-default.yaml`, adjustable with
+  `--plugin-quality-config`. The JSON report gains a `plugin_quality` block.
 - Experimental `tier3 evaluate --backend nemo-gym` targets a native Gym task-folder
   interface. Public `nemo-gym==0.7.0` is incompatible; public source candidate
   `NVIDIA-NeMo/Gym@792fa142f58277aecff05d402061d647e9a92acf` exposes the required
