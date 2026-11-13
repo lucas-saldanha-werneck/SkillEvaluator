@@ -1,0 +1,280 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# Default deterministic plugin quality-score rules.
+#
+# Same scale as the skill quality score: four dimensions with the skill weights,
+# each starting at 100 and losing fixed points per rule (floor 0).
+# A custom file (--plugin-quality-config) lists any subset of rule IDs and keys;
+# omitted keys keep the values below. `dimension` and `applies_to` cannot change.
+# Set `points: 0` to turn a rule off. Lists replace the packaged list.
+#
+# applies_to: "all" = every plugin manifest format; "claude" = Claude Code
+# manifests only (other formats report the rule as not applicable).
+# Rules with `cap` deduct `points` per item, at most `cap` in total.
+rules:
+  # --- Correctness -----------------------------------------------------------
+  manifest_invalid:
+    dimension: correctness
+    severity: error
+    points: 15
+    applies_to: all
+    message: "Plugin manifest is invalid"
+    suggestion: "Fix the manifest so it parses and every field has the documented type"
+    source: "https://code.claude.com/docs/en/plugins-reference"
+  hooks_file_unwrapped:
+    dimension: correctness
+    severity: error
+    points: 15
+    applies_to: claude
+    message: "Hooks file has neither a top-level \"hooks\" nor a \"modules\" key and will not load"
+    suggestion: "Wrap the event map in a top-level \"hooks\" key"
+    source: "https://code.claude.com/docs/en/plugins-reference"
+  component_path_missing:
+    dimension: correctness
+    severity: error
+    points: 15
+    applies_to: all
+    message: "Declared component path does not exist"
+    suggestion: "Point the manifest at a file or directory that ships with the plugin"
+    source: "https://code.claude.com/docs/en/plugins-reference"
+  component_path_outside_root:
+    dimension: correctness
+    severity: warning
+    points: 15
+    applies_to: all
+    message: "Component path leaves the plugin root or does not start with ./"
+    suggestion: "Use paths relative to the plugin root that start with ./"
+    source: "https://code.claude.com/docs/en/plugins-reference"
+  name_format:
+    dimension: correctness
+    severity: warning
+    points: 15
+    applies_to: all
+    message: "Plugin name is not kebab-case"
+    suggestion: "Use only lowercase letters, digits and hyphens"
+    source: "skill: name format"
+  name_reserved:
+    dimension: correctness
+    severity: warning
+    points: 15
+    applies_to: all
+    message: "Plugin name contains a reserved term"
+    suggestion: "Remove the reserved term from the name"
+    source: "skill: reserved name"
+    terms: [anthropic, claude]
+  author_missing:
+    dimension: correctness
+    severity: warning
+    points: 5
+    applies_to: all
+    message: "No author in the manifest or marketplace entry"
+    suggestion: "Add an author to plugin.json"
+    source: "skill: author metadata"
+  version_missing:
+    dimension: correctness
+    severity: warning
+    points: 5
+    applies_to: all
+    message: "No version in the manifest or marketplace entry"
+    suggestion: "Add a semantic version to plugin.json or to the marketplace entry"
+    source: "skill: version metadata"
+  hook_without_plugin_root:
+    dimension: correctness
+    severity: warning
+    points: 10
+    applies_to: claude
+    message: "Hook command calls a plugin file without ${CLAUDE_PLUGIN_ROOT}"
+    suggestion: "Reference plugin files as \"${CLAUDE_PLUGIN_ROOT}/path\" so the hook works from any directory"
+    source: "https://code.claude.com/docs/en/plugins-reference"
+  state_in_plugin_root:
+    dimension: correctness
+    severity: warning
+    points: 10
+    applies_to: claude
+    message: "Hook writes state inside ${CLAUDE_PLUGIN_ROOT}"
+    suggestion: "Write persistent state to ${CLAUDE_PLUGIN_DATA}; the plugin root is replaced on update"
+    source: "https://code.claude.com/docs/en/plugins-reference"
+  hook_event_unknown:
+    dimension: correctness
+    severity: warning
+    points: 15
+    applies_to: claude
+    message: "Hook uses an unknown event or handler type"
+    suggestion: "Use an event and handler type listed in the hooks reference"
+    source: "https://code.claude.com/docs/en/hooks"
+  mod_module_invalid:
+    dimension: correctness
+    severity: error
+    points: 15
+    applies_to: claude
+    message: "Mod module cannot be loaded"
+    suggestion: "List existing module files in \"modules\" and export a register function from each"
+    source: "https://code.claude.com/docs/en/plugins/mods/reference"
+
+  # --- Discoverability -------------------------------------------------------
+  description_short:
+    dimension: discoverability
+    severity: warning
+    points: 20
+    applies_to: all
+    message: "Plugin description is too short"
+    suggestion: "Describe what the plugin does and when to install it"
+    source: "skill: description too short"
+    min_chars: 20
+  description_long:
+    dimension: discoverability
+    severity: info
+    points: 5
+    applies_to: all
+    message: "Plugin description is long"
+    suggestion: "Keep the description short; marketplace listings cut long text"
+    source: "skill: description too long"
+    max_chars: 200
+  description_vague:
+    dimension: discoverability
+    severity: warning
+    points: 15
+    applies_to: all
+    message: "Plugin description contains vague words"
+    suggestion: "Be specific about what this plugin does"
+    source: "skill: vague description"
+  description_person:
+    dimension: discoverability
+    severity: warning
+    points: 15
+    applies_to: all
+    message: "Plugin description uses first/second person"
+    suggestion: "Use third person: 'Formats tables' not 'You can format tables'"
+    source: "skill: first/second person description"
+  component_description_missing:
+    dimension: discoverability
+    severity: warning
+    points: 10
+    applies_to: all
+    message: "Commands or agents have no description"
+    suggestion: "Add a description to each command and agent frontmatter"
+    source: "https://code.claude.com/docs/en/plugins-reference"
+    cap: 30
+  mod_registration_description:
+    dimension: discoverability
+    severity: warning
+    points: 10
+    applies_to: claude
+    message: "Mod tools or commands have a missing or short description"
+    suggestion: "Give each registered tool and command a description the model can act on"
+    source: "https://code.claude.com/docs/en/plugins/mods/api"
+    cap: 30
+    min_chars: 20
+  readme_missing:
+    dimension: discoverability
+    severity: warning
+    points: 10
+    applies_to: all
+    message: "No README.md at the plugin root"
+    suggestion: "Add a README.md that explains what the plugin does and how to install it"
+    source: "https://code.claude.com/docs/en/plugins-reference"
+  hook_status_message_missing:
+    dimension: discoverability
+    severity: info
+    points: 5
+    applies_to: claude
+    message: "Hooks do not say what they do"
+    suggestion: "Add a top-level \"description\" to the hooks file or a \"statusMessage\" to each handler"
+    source: "https://code.claude.com/docs/en/hooks"
+
+  # --- Reliability -----------------------------------------------------------
+  hook_script_error_handling:
+    dimension: reliability
+    severity: info
+    points: 5
+    applies_to: claude
+    message: "Hook scripts may lack error handling"
+    suggestion: "Fail explicitly in hook scripts (set -e, trap, try/except, .catch)"
+    source: "skill: scripts may lack error handling"
+    markers:
+      sh: ["set -e", "set -o errexit", "trap ", "|| exit"]
+      py: ["try:", "raise", "sys.exit("]
+      js: ["try {", ".catch(", "process.exitCode"]
+  hook_timeout_missing:
+    dimension: reliability
+    severity: info
+    points: 5
+    applies_to: claude
+    message: "Command hooks have no timeout"
+    suggestion: "Set a \"timeout\" on each command hook"
+    source: "https://code.claude.com/docs/en/hooks"
+  script_not_executable:
+    dimension: reliability
+    severity: warning
+    points: 10
+    applies_to: claude
+    message: "Hook scripts are run directly but are not executable"
+    suggestion: "chmod +x the script or call it through its interpreter"
+    source: "https://code.claude.com/docs/en/hooks"
+    interpreters: [sh, bash, zsh, python, python3, node, bun, deno, uv, uvx, npx, ruby, perl]
+  tests_missing:
+    dimension: reliability
+    severity: warning
+    points: 10
+    applies_to: all
+    message: "No tests found"
+    suggestion: "Add tests for the plugin's commands, hooks or scripts"
+    source: "skill: validation"
+    patterns: ["tests/", "test/", "test_*.py", "*_test.py", "*.test.*", "*.spec.*", "*_test.go", "*.bats"]
+  mod_tests_missing:
+    dimension: reliability
+    severity: warning
+    points: 10
+    applies_to: claude
+    message: "Mod has no mod tests"
+    suggestion: "Add *.test.ts files that exercise the hooks module"
+    source: "https://code.claude.com/docs/en/plugins/mods/test"
+  readme_limitations_missing:
+    dimension: reliability
+    severity: info
+    points: 5
+    applies_to: all
+    message: "README has no limitations or troubleshooting section"
+    suggestion: "Add a '## Limitations' or '## Troubleshooting' section"
+    source: "skill: limitations/troubleshooting sections"
+    headings: ["## Limitations", "## Known Issues", "## Known Limitations", "## Troubleshooting", "## Common Issues", "## FAQ"]
+
+  # --- Efficiency ------------------------------------------------------------
+  context_cost_high:
+    dimension: efficiency
+    severity: warning
+    points: 15
+    applies_to: all
+    message: "Always-on context is large"
+    suggestion: "Shorten skill, command, agent, tool and MCP descriptions that load every session"
+    source: "skill: token budget"
+    max_tokens: 5000
+  hook_matcher_broad:
+    dimension: efficiency
+    severity: warning
+    points: 10
+    applies_to: claude
+    message: "Tool hooks match every tool"
+    suggestion: "Set a matcher that names the tools the hook needs"
+    source: "https://code.claude.com/docs/en/hooks"
+    events: [PreToolUse, PostToolUse]
+  hook_static_context_large:
+    dimension: efficiency
+    severity: warning
+    points: 10
+    applies_to: claude
+    message: "Hook injects large fixed text on every prompt or session"
+    suggestion: "Inject only what the turn needs, or move the text to a skill"
+    source: "https://code.claude.com/docs/en/hooks"
+    max_chars: 2000
+    events: [UserPromptSubmit, SessionStart]
+  mod_unfiltered_handler:
+    dimension: efficiency
+    severity: info
+    points: 5
+    applies_to: claude
+    message: "Mod handles every event of a type without a filter"
+    suggestion: "Pass a filter object so the handler runs only for the events it needs"
+    source: "https://code.claude.com/docs/en/plugins/mods/reference"
+    events: [tool.call]
