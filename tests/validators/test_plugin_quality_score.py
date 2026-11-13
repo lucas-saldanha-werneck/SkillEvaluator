@@ -109,7 +109,6 @@ def test_hooks_and_modules_together_are_both_read(tmp_path):
     assert not {"hooks_file_unwrapped", "mod_module_invalid"} & set(_ids(qs))
 
 
-@pytest.mark.xfail(reason="hook_timeout_missing is added with the reliability rules", strict=True)
 def test_inline_manifest_hooks_are_not_unwrapped_file(tmp_path):
     manifest = {
         **GOOD_MANIFEST,
@@ -318,3 +317,153 @@ def test_status_message_satisfies_transparency(tmp_path):
         )
     )
     assert not {"readme_missing", "hook_status_message_missing"} & set(_ids(qs))
+
+
+# --- Reliability -----------------------------------------------------------------
+
+
+def test_mod_without_tests_counts_once(tmp_path):
+    qs = _score(
+        make_plugin(
+            tmp_path / "p",
+            manifest=GOOD_MANIFEST,
+            files={
+                "README.md": "# p",
+                "hooks/hooks.json": json.dumps({"modules": ["./r.ts"]}),
+                "hooks/r.ts": "export function register(on) {}\n",
+            },
+        )
+    )
+    ids = _ids(qs)
+    assert "mod_tests_missing" in ids and "tests_missing" not in ids
+
+
+def test_mod_with_tests_is_fine(tmp_path):
+    qs = _score(
+        make_plugin(
+            tmp_path / "p",
+            manifest=GOOD_MANIFEST,
+            files={
+                "hooks/hooks.json": json.dumps({"modules": ["./r.ts"]}),
+                "hooks/r.ts": "export function register(on) {}\n",
+                "tests/r.test.ts": "test('x', () => {})\n",
+            },
+        )
+    )
+    assert not {"mod_tests_missing", "tests_missing"} & set(_ids(qs))
+
+
+def test_plain_plugin_without_tests(tmp_path):
+    assert "tests_missing" in _ids(_score(make_plugin(tmp_path / "p", manifest=GOOD_MANIFEST, files={"README.md": "# p"})))
+
+
+@pytest.mark.parametrize("test_file", ["tests/test_x.py", "scripts/run_test.go", "lib/a.test.js", "test/x.bats"])
+def test_test_files_satisfy_tests_rule(tmp_path, test_file):
+    ids = _ids(
+        _score(make_plugin(tmp_path / "p", manifest=GOOD_MANIFEST, files={"README.md": "# p", test_file: "x\n"}))
+    )
+    assert "tests_missing" not in ids
+
+
+def test_hook_script_rules(tmp_path):
+    qs = _score(
+        make_plugin(
+            tmp_path / "p",
+            manifest=GOOD_MANIFEST,
+            files={
+                "README.md": "# p\n## Limitations\n- none\n",
+                "hooks/hooks.json": json.dumps(
+                    {
+                        "description": "d",
+                        "hooks": {
+                            "Stop": [
+                                {
+                                    "hooks": [
+                                        {"type": "command", "command": '"${CLAUDE_PLUGIN_ROOT}/run.sh"'},
+                                        {
+                                            "type": "command",
+                                            "command": 'python3 "${CLAUDE_PLUGIN_ROOT}/ok.py"',
+                                            "timeout": 5,
+                                        },
+                                    ]
+                                }
+                            ]
+                        },
+                    }
+                ),
+                "run.sh": "echo hi\n",
+                "ok.py": "try:\n    pass\nexcept Exception:\n    raise\n",
+            },
+        )
+    )
+    by_id = {i.rule_id: i for i in qs.all_issues}
+    assert "run.sh" in by_id["hook_script_error_handling"].message
+    assert "ok.py" not in by_id["hook_script_error_handling"].message
+    assert by_id["hook_timeout_missing"].deduction == 5
+    assert "run.sh" in by_id["script_not_executable"].message
+    assert "ok.py" not in by_id["script_not_executable"].message
+    assert "readme_limitations_missing" not in by_id
+
+
+def test_executable_script_is_fine(tmp_path):
+    ids = _ids(
+        _score(
+            make_plugin(
+                tmp_path / "p",
+                manifest=GOOD_MANIFEST,
+                executable=["run.sh"],
+                files={
+                    "hooks/hooks.json": json.dumps(
+                        {
+                            "description": "d",
+                            "hooks": {
+                                "Stop": [
+                                    {
+                                        "hooks": [
+                                            {"type": "command", "command": '"${CLAUDE_PLUGIN_ROOT}/run.sh"', "timeout": 5}
+                                        ]
+                                    }
+                                ]
+                            },
+                        }
+                    ),
+                    "run.sh": "set -e\necho hi\n",
+                },
+            )
+        )
+    )
+    assert "script_not_executable" not in ids and "hook_script_error_handling" not in ids
+
+
+def test_file_read_by_a_command_is_not_a_direct_script(tmp_path):
+    ids = _ids(
+        _score(
+            make_plugin(
+                tmp_path / "p",
+                manifest=GOOD_MANIFEST,
+                files={
+                    "hooks/hooks.json": json.dumps(
+                        {
+                            "description": "d",
+                            "hooks": {
+                                "SessionStart": [
+                                    {
+                                        "hooks": [
+                                            {"type": "command", "command": 'cat "${CLAUDE_PLUGIN_ROOT}/ctx.sh"', "timeout": 5}
+                                        ]
+                                    }
+                                ]
+                            },
+                        }
+                    ),
+                    "ctx.sh": "echo hi\n",
+                },
+            )
+        )
+    )
+    assert "script_not_executable" not in ids
+
+
+def test_readme_without_limitations(tmp_path):
+    ids = _ids(_score(make_plugin(tmp_path / "p", manifest=GOOD_MANIFEST, files={"README.md": "# p\n## Usage\nx\n"})))
+    assert "readme_limitations_missing" in ids

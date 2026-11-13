@@ -9,6 +9,7 @@ scope, parameters, source). Checks only read files; no plugin code runs.
 
 from __future__ import annotations
 
+import fnmatch
 import posixpath
 import re
 import shlex
@@ -26,7 +27,7 @@ from skillevaluator.plugin_component_risk import iter_hook_handlers
 from skillevaluator.plugin_format_schema import ManifestIssue, validate_manifest_fields
 from skillevaluator.plugin_inventory import _finding_rel_path
 from skillevaluator.plugin_manifest import PluginManifestPathError, find_claude_marketplace_entry
-from skillevaluator.plugin_mods import ModInventory, read_mods
+from skillevaluator.plugin_mods import ModInventory, mod_test_files, read_mods
 from skillevaluator.utils.secure_fs import SecurePathError
 from skillevaluator.validators.quality_score import _contains_any_term
 
@@ -168,6 +169,12 @@ def _listed(items: list[str]) -> str:
 def _name_has_term(name: str, terms: list[str]) -> bool:
     """Reserved term as a name segment; unlike prose, ``_`` also separates segments (``Claude_Tool``)."""
     return any(re.search(rf"(?<![A-Za-z0-9]){re.escape(term)}(?![A-Za-z0-9])", name, re.IGNORECASE) for term in terms)
+
+
+def _readme_file(ctx: PluginQualityContext) -> str | None:
+    return next(
+        (p.as_posix() for p in ctx.source_files if len(p.parts) == 1 and p.name.lower() == "readme.md"), None
+    )
 
 
 def _manifest_file(ctx: PluginQualityContext) -> str:
@@ -452,8 +459,112 @@ def check_discoverability(ctx: PluginQualityContext, qs: PluginQualityScoreResul
         )
 
 
-def check_reliability(ctx: PluginQualityContext, qs: PluginQualityScoreResult, rules: dict) -> None:
+_MARKER_LANGUAGE = {
+    ".sh": "sh",
+    ".bash": "sh",
+    ".zsh": "sh",
+    ".py": "py",
+    ".js": "js",
+    ".mjs": "js",
+    ".cjs": "js",
+    ".ts": "js",
+    ".mts": "js",
+}
+
+
+def _script_language(path: PurePosixPath, text: str) -> str | None:
+    if path.suffix:
+        return _MARKER_LANGUAGE.get(path.suffix)
+    first = text.split("\n", 1)[0]
+    if first.startswith("#!"):  # extensionless script: read the interpreter from its shebang
+        if re.search(r"\b(?:ba|z)?sh\b", first):
+            return "sh"
+        if "python" in first:
+            return "py"
+        if re.search(r"\b(?:node|bun|deno)\b", first):
+            return "js"
     return None
+
+
+def _direct_scripts(ctx: PluginQualityContext) -> list[PurePosixPath]:
+    """Plugin files a hook command runs as its first word, without an interpreter in front."""
+    direct: list[PurePosixPath] = []
+    for view in _command_handlers(ctx):
+        command = view.handler["command"]
+        try:
+            first = shlex.split(command)[:1]
+        except ValueError:
+            first = command.split()[:1]
+        if not first:
+            continue
+        for path, _via_root, has_interpreter in hook_command_scripts(first[0], ctx):
+            if not has_interpreter and path not in direct:
+                direct.append(path)
+    return direct
+
+
+def _matches_test_pattern(path: PurePosixPath, patterns: list[str]) -> bool:
+    for pattern in patterns:
+        if pattern.endswith("/"):
+            if pattern.rstrip("/") in path.parts[:-1]:
+                return True
+        elif fnmatch.fnmatch(path.name, pattern):
+            return True
+    return False
+
+
+def check_reliability(ctx: PluginQualityContext, qs: PluginQualityScoreResult, rules: dict) -> None:
+    markers = rules["hook_script_error_handling"].get("markers", {})
+    unhandled: list[str] = []
+    executed = [path for path, _via_root, _interp in _hook_scripts(ctx) if path.suffix in _SCRIPT_SUFFIXES]
+    executed += [path for path in _direct_scripts(ctx) if path not in executed]
+    for path in executed:
+        text = read_plugin_text(ctx, path)
+        if text is None:
+            continue
+        language = _script_language(path, text)
+        if language is None or language not in markers:
+            continue
+        handled = any(marker in text for marker in markers[language])
+        if language == "py" and "try:" in text and "except" in text:
+            handled = True
+        if not handled:
+            unhandled.append(path.as_posix())
+    if unhandled:
+        apply_rule(qs, rules, "hook_script_error_handling", _listed(unhandled), ctx=ctx, file=unhandled[0])
+
+    no_timeout = [view for view in _command_handlers(ctx) if "timeout" not in view.handler]
+    if no_timeout:
+        apply_rule(
+            qs,
+            rules,
+            "hook_timeout_missing",
+            _listed([f"{view.file}:{view.event}" for view in no_timeout]),
+            ctx=ctx,
+            file=no_timeout[0].file,
+        )
+
+    not_executable: list[str] = []
+    for path in _direct_scripts(ctx):
+        try:
+            mode = (ctx.root / path).lstat().st_mode
+        except OSError:
+            continue
+        if not mode & 0o111:
+            not_executable.append(path.as_posix())
+    if not_executable:
+        apply_rule(qs, rules, "script_not_executable", _listed(not_executable), ctx=ctx, file=not_executable[0])
+
+    patterns = rules["tests_missing"].get("patterns", [])
+    if not ctx.mods and not any(_matches_test_pattern(path, patterns) for path in ctx.source_files):
+        apply_rule(qs, rules, "tests_missing", ctx=ctx)
+    if ctx.mods and not mod_test_files(ctx.source_files):
+        apply_rule(qs, rules, "mod_tests_missing", ctx=ctx, file=ctx.mods[0].hooks_file)
+
+    if ctx.readme is not None:
+        headings = rules["readme_limitations_missing"].get("headings", [])
+        if not any(heading in ctx.readme for heading in headings):
+            apply_rule(qs, rules, "readme_limitations_missing", ctx=ctx, file=_readme_file(ctx))
 
 
 def check_efficiency(ctx: PluginQualityContext, qs: PluginQualityScoreResult, rules: dict) -> None:
