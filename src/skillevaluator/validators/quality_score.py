@@ -31,9 +31,11 @@ from skillevaluator.constants import (
     QUALITY_CHARS_PER_TOKEN,
     QUALITY_DEFAULT_MIN_SCORE,
     QUALITY_EXCLUDED_DIRS,
+    QUALITY_PERSON_PHRASES,
     QUALITY_RECOMMENDED_MAX_TOKENS,
     QUALITY_RESERVED_NAMES,
     QUALITY_RESOURCE_DIRS,
+    QUALITY_VAGUE_WORDS,
 )
 from skillevaluator.logging_config import get_logger
 from skillevaluator.models.quality import QualityScoreResult
@@ -727,8 +729,7 @@ class QualityScoreValidator(ValidatorBase):
                     "Add trigger context: 'Use for...', 'When you need to...'",
                 )
 
-            vague_words = ["something", "things", "stuff", "various", "general"]
-            if _contains_any_term(desc, vague_words):
+            if _contains_any_term(desc, QUALITY_VAGUE_WORDS):
                 dim.deduct(
                     15,
                     "warning",
@@ -736,8 +737,7 @@ class QualityScoreValidator(ValidatorBase):
                     "Be specific about what this skill does",
                 )
 
-            person_phrases = ["i can", "i will", "you can", "you should", "your", "my", "we can"]
-            if _contains_any_term(desc, person_phrases):
+            if _contains_any_term(desc, QUALITY_PERSON_PHRASES):
                 dim.deduct(
                     15,
                     "warning",

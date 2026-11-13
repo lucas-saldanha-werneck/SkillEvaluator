@@ -391,6 +391,9 @@ QUALITY_CHARS_PER_TOKEN = 4
 QUALITY_MAX_BODY_LINES = 500
 
 QUALITY_RESERVED_NAMES = ["anthropic", "claude"]
+# Description word lists shared by the skill and plugin quality scores.
+QUALITY_VAGUE_WORDS: tuple[str, ...] = ("something", "things", "stuff", "various", "general")
+QUALITY_PERSON_PHRASES: tuple[str, ...] = ("i can", "i will", "you can", "you should", "your", "my", "we can")
 
 QUALITY_EXCLUDED_DIRS = frozenset(
     {
