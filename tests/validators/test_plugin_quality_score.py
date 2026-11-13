@@ -558,3 +558,76 @@ def test_large_file_cat_on_prompt_submit(tmp_path):
     files["ctx.md"] = "rule\n" * 600
     ids = _ids(_score(make_plugin(tmp_path / "p", manifest=GOOD_MANIFEST, files=files)))
     assert "hook_static_context_large" in ids
+
+
+# --- Aggregation, bundled skills, advisory and enforced modes ----------------------
+
+GOOD_SKILL = (
+    "---\nname: good-skill\ndescription: Formats CSV files into tables. Use when a CSV needs review.\n"
+    "version: 1.0.0\nmetadata:\n  author: A\n  tags: [csv]\n---\n# Good\n## Purpose\nx\n## Examples\n```\nx\n```\n"
+    "## Prerequisites\nx\n## Limitations\nx\n## Troubleshooting\nerror handling\n"
+)
+
+
+def _validate(root, **kw):
+    return PluginQualityScoreValidator(**kw).validate(root)
+
+
+def test_advisory_mode_never_fails(tmp_path):
+    root = make_plugin(tmp_path / "p", manifest={"name": "Bad Name"}, files={"hooks/hooks.json": "{}"})
+    result = _validate(root)
+    pq = result.metadata["plugin_quality_scores"]
+    assert result.passed is True and pq["passed"] is False and pq["enforced"] is False
+    assert any(f.metadata.get("would_block") for f in result.findings)
+
+
+def test_enforced_mode_fails_on_error_rule(tmp_path):
+    root = make_plugin(tmp_path / "p", manifest=GOOD_MANIFEST, files={"hooks/hooks.json": "{}"})
+    result = _validate(root, enforce=True)
+    assert result.passed is False
+    assert "error rule: hooks_file_unwrapped" in result.metadata["plugin_quality_scores"]["blocking"]
+
+
+def test_enforced_mode_fails_below_min_score(tmp_path):
+    root = make_plugin(tmp_path / "p", manifest={"name": "x"})
+    result = _validate(root, enforce=True, min_score=95)
+    blocking = result.metadata["plugin_quality_scores"]["blocking"]
+    assert result.passed is False and any(b.startswith("score ") and b.endswith("< 95") for b in blocking)
+
+
+def test_failing_bundled_skill_blocks_plugin(tmp_path):
+    root = make_plugin(
+        tmp_path / "p",
+        manifest=GOOD_MANIFEST,
+        files={
+            "README.md": "# p\n## Limitations\nx\n",
+            "tests/test_a.py": "def test_a(): pass\n",
+            "skills/good-skill/SKILL.md": GOOD_SKILL,
+            "skills/bad/SKILL.md": "---\nname: Bad Skill\ndescription: x\n---\nhi\n",  # invalid name: error
+        },
+    )
+    pq = _validate(root, enforce=True).metadata["plugin_quality_scores"]
+    assert pq["skill_count"] == 2
+    assert {s["skill_name"]: s["passed"] for s in pq["skills"]} == {"good-skill": True, "bad": False}
+    assert pq["passed"] is False and "bundled skill 'bad' failed quality" in pq["blocking"]
+
+
+def test_skills_only_plugin_passes_on_its_parts(tmp_path):
+    root = make_plugin(
+        tmp_path / "p",
+        manifest=GOOD_MANIFEST,
+        files={
+            "README.md": "# p\n## Limitations\nx\n",
+            "tests/test_a.py": "def test_a(): pass\n",
+            "skills/good-skill/SKILL.md": GOOD_SKILL,
+        },
+    )
+    result = _validate(root, enforce=True)
+    assert result.passed is True and result.metadata["plugin_quality_scores"]["grade"] == "A"
+    assert result.metadata["plugin_quality_config"]["source"] == "packaged"
+
+
+def test_no_manifest_is_high(tmp_path):
+    (tmp_path / "empty").mkdir()
+    result = _validate(tmp_path / "empty")
+    assert result.passed is False and result.findings[0].check_name == "plugin_manifest_missing"
