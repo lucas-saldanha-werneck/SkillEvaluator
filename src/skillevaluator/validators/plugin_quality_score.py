@@ -60,7 +60,7 @@ class PluginQualityScoreValidator(ValidatorBase):
 
     def score(self, inventory: PluginInventory) -> PluginQualityScoreResult:
         """Score one plugin inventory; never raises on malformed plugin content."""
-        ctx = build_context(inventory)
+        ctx = build_context(inventory, tuple(self.rules["script_not_executable"].get("interpreters", ())))
         name = ctx.manifest.get("name")
         qs = PluginQualityScoreResult(
             plugin_name=name if isinstance(name, str) else inventory.root.name,
