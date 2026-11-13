@@ -70,7 +70,7 @@ class TestPerCheckProgress:
         assert "[1/1] schema" in output
         assert "[1/2]" not in output
 
-    def test_step_count_excludes_skill_only_checks_for_plugin(self, tmp_path, progress_capture):
+    def test_step_count_runs_plugin_quality_and_excludes_lint_for_plugin(self, tmp_path, progress_capture):
         plugin = tmp_path / "my-plugin"
         plugin.mkdir()
         (plugin / "agent_plugin.yaml").write_text(
@@ -88,6 +88,7 @@ skills:
         commands.run_validation(plugin, checks="schema,quality,lint", content_type=CONTENT_TYPE_PLUGIN)
 
         output = progress_capture.getvalue()
-        assert "[1/1] schema ..." in output
-        assert "quality" not in output
+        # quality runs the plugin quality score for plugins; lint stays skill-only
+        assert "[1/2] schema ..." in output
+        assert "[2/2] quality ..." in output
         assert "lint" not in output
