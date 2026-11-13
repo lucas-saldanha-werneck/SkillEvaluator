@@ -480,6 +480,15 @@ All notable changes to SkillEvaluator are documented in this file.
   coverage gaps in those files now count, so a plugin can move from
   `INCOMPLETE` to `FAILED` or `PASSED`. `security-scan` and folders of skills
   still scan each skill on its own.
+- Add `SKILL_EVAL_LLM_REFUSAL_FALLBACK_MODEL` to set the model that Claude 5.5
+  or later requests name as the server-side refusal fallback, or to turn it off
+  with `none`, `off`, `disabled`, `false` or `0`. The Claude API answers HTTP
+  400 (`'claude-opus-4-8' is not a valid fallback target for
+  'claude-sonnet-5-5'`) when the fixed `claude-opus-4-8` target does not suit
+  the request model, which made such a model unusable for LLM checks and as a
+  Tier 3 judge. A fallback equal to the request model is no longer sent. The
+  default is unchanged. The Harbor verifier receives the variable like
+  `LLM_JUDGE_FALLBACK_MODELS`; its Bedrock refusal retry uses it too.
 
 - Configure CLI stdout to replace characters that its encoding cannot
   represent, so reports and root help complete on legacy Windows code pages.
@@ -798,6 +807,10 @@ All notable changes to SkillEvaluator are documented in this file.
   the digest of the unmasked value, so anyone holding the redacted report could
   confirm a guess for the masked part. Redaction now removes a digest that no
   longer matches the reported value.
+
+- Truncated `--llm-verify` replies with no complete verdicts no longer claim an
+  answering model. Complete verdicts still retain their model, and other LLM
+  parsers can still accept an empty result as complete evidence.
 
 - Tier 2 context deduplication now checks each chat-LLM verdict before it
   becomes a finding. When present, the confidence must be a JSON number from 0
