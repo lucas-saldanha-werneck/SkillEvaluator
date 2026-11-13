@@ -567,8 +567,87 @@ def check_reliability(ctx: PluginQualityContext, qs: PluginQualityScoreResult, r
             apply_rule(qs, rules, "readme_limitations_missing", ctx=ctx, file=_readme_file(ctx))
 
 
+_HEREDOC_RE = re.compile(r"<<-?\s*['\"]?(\w+)['\"]?[^\n]*\n(.*?)\n\s*\1\b", re.DOTALL)
+
+
+def static_output_chars(command: str, ctx: PluginQualityContext) -> int:
+    """Largest fixed text a hook command prints: echo/printf literals, a heredoc, or ``cat`` of a plugin file.
+
+    Dynamic output (anything with ``$`` or backticks, or a script) counts as 0.
+    """
+    sizes = [len(match.group(2)) for match in _HEREDOC_RE.finditer(command)]
+    try:
+        words = shlex.split(command)
+    except ValueError:
+        words = []
+    if len(words) >= 2 and words[0] in {"echo", "printf"} and not any("$" in w or "`" in w for w in words[1:]):
+        sizes.append(len(" ".join(word for word in words[1:] if not word.startswith("-"))))
+    if len(words) == 2 and words[0] == "cat":
+        for path, via_root, _interp in hook_command_scripts(words[1], ctx):
+            if via_root:
+                text = read_plugin_text(ctx, path)
+                sizes.append(len(text) if text is not None else 0)
+    return max(sizes, default=0)
+
+
 def check_efficiency(ctx: PluginQualityContext, qs: PluginQualityScoreResult, rules: dict) -> None:
-    return None
+    cost = ctx.inventory.context_cost()
+    qs.always_on_tokens = int(cost.get("always_on_tokens", 0))
+    max_tokens = rules["context_cost_high"].get("max_tokens", 5000)
+    if qs.always_on_tokens > max_tokens:
+        top = sorted(cost.get("by_component", []), key=lambda row: row.get("always_on_tokens", 0), reverse=True)
+        detail = f"~{qs.always_on_tokens} tokens > {max_tokens}"
+        if top and top[0].get("always_on_tokens"):
+            detail += f"; largest: {top[0]['type']} {top[0]['name']} (~{top[0]['always_on_tokens']})"
+        apply_rule(qs, rules, "context_cost_high", detail, ctx=ctx)
+
+    # Literal matcher check: matcher_scope fails closed for "all" and would count undecidable matchers too.
+    broad_events = set(rules["hook_matcher_broad"].get("events", []))
+    broad = [view for view in ctx.handlers if view.event in broad_events and view.matcher in {None, "", "*"}]
+    if broad:
+        apply_rule(
+            qs,
+            rules,
+            "hook_matcher_broad",
+            _listed([f"{view.file}:{view.event}" for view in broad]),
+            ctx=ctx,
+            file=broad[0].file,
+        )
+
+    # Sized from the full handler command: HookRecord.target (which the context-cost
+    # rows use) is truncated, so a long literal would be under-counted there.
+    static_rule = rules["hook_static_context_large"]
+    static_events = set(static_rule.get("events", []))
+    max_chars = static_rule.get("max_chars", 2000)
+    large: list[tuple[HookHandlerView, int]] = []
+    for view in _command_handlers(ctx):
+        if view.event not in static_events:
+            continue
+        size = static_output_chars(view.handler["command"], ctx)
+        if size > max_chars:
+            large.append((view, size))
+    if large:
+        apply_rule(
+            qs,
+            rules,
+            "hook_static_context_large",
+            _listed([f"{view.file}:{view.event} (~{size} chars)" for view, size in large]),
+            ctx=ctx,
+            file=large[0][0].file,
+        )
+
+    unfiltered_events = set(rules["mod_unfiltered_handler"].get("events", []))
+    unfiltered = [h for mod in ctx.mods for h in mod.handlers if h.event in unfiltered_events and not h.filtered]
+    if unfiltered:
+        apply_rule(
+            qs,
+            rules,
+            "mod_unfiltered_handler",
+            _listed([f"{h.event} ({h.file}:{h.line})" for h in unfiltered]),
+            ctx=ctx,
+            file=unfiltered[0].file,
+            line=unfiltered[0].line,
+        )
 
 
 def component_counts(inventory: PluginInventory) -> dict[str, Any]:

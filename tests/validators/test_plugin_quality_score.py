@@ -467,3 +467,94 @@ def test_file_read_by_a_command_is_not_a_direct_script(tmp_path):
 def test_readme_without_limitations(tmp_path):
     ids = _ids(_score(make_plugin(tmp_path / "p", manifest=GOOD_MANIFEST, files={"README.md": "# p\n## Usage\nx\n"})))
     assert "readme_limitations_missing" in ids
+
+
+# --- Efficiency ------------------------------------------------------------------
+
+
+def _hooks_file(event, matcher, command="true"):
+    group = {"hooks": [{"type": "command", "command": command, "timeout": 5}]}
+    if matcher is not None:
+        group["matcher"] = matcher
+    return {"hooks/hooks.json": json.dumps({"description": "d", "hooks": {event: [group]}})}
+
+
+@pytest.mark.parametrize("matcher", ["*", "", None])
+def test_broad_pretooluse_matcher(tmp_path, matcher):
+    ids = _ids(_score(make_plugin(tmp_path / "p", manifest=GOOD_MANIFEST, files=_hooks_file("PreToolUse", matcher))))
+    assert "hook_matcher_broad" in ids
+
+
+def test_named_matcher_is_fine(tmp_path):
+    ids = _ids(_score(make_plugin(tmp_path / "p", manifest=GOOD_MANIFEST, files=_hooks_file("PreToolUse", "Bash"))))
+    assert "hook_matcher_broad" not in ids
+
+
+def test_broad_matcher_on_other_event_is_fine(tmp_path):
+    ids = _ids(_score(make_plugin(tmp_path / "p", manifest=GOOD_MANIFEST, files=_hooks_file("Stop", None))))
+    assert "hook_matcher_broad" not in ids
+
+
+def test_large_always_on_context(tmp_path):
+    files = {f"commands/c{i}.md": f"---\ndescription: {'w' * 1000}\n---\nbody\n" for i in range(25)}
+    qs = _score(make_plugin(tmp_path / "p", manifest=GOOD_MANIFEST, files=files))
+    assert qs.always_on_tokens > 5000 and "context_cost_high" in _ids(qs)
+
+
+def test_small_context_is_fine(tmp_path):
+    qs = _score(make_plugin(tmp_path / "p", manifest=GOOD_MANIFEST, files={"README.md": "# p"}))
+    assert "context_cost_high" not in _ids(qs)
+
+
+def test_large_session_start_text(tmp_path):
+    big = "x" * 3000
+    files = _hooks_file("SessionStart", None, f"echo {big}")
+    ids = _ids(_score(make_plugin(tmp_path / "p", manifest=GOOD_MANIFEST, files=files)))
+    assert "hook_static_context_large" in ids
+
+
+def test_small_session_start_text_is_fine(tmp_path):
+    files = _hooks_file("SessionStart", None, "echo hello")
+    ids = _ids(_score(make_plugin(tmp_path / "p", manifest=GOOD_MANIFEST, files=files)))
+    assert "hook_static_context_large" not in ids
+
+
+def test_unfiltered_tool_call_handler(tmp_path):
+    ids = _ids(
+        _score(
+            make_plugin(
+                tmp_path / "p",
+                manifest=GOOD_MANIFEST,
+                files={
+                    "hooks/hooks.json": json.dumps({"modules": ["./r.ts"]}),
+                    "hooks/r.ts": "export function register(on) { on('tool.call', async ($, e, next) => next(e)) }\n",
+                },
+            )
+        )
+    )
+    assert "mod_unfiltered_handler" in ids
+
+
+def test_filtered_handler_and_other_events_are_fine(tmp_path):
+    ids = _ids(
+        _score(
+            make_plugin(
+                tmp_path / "p",
+                manifest=GOOD_MANIFEST,
+                files={
+                    "hooks/hooks.json": json.dumps({"modules": ["./r.ts"]}),
+                    "hooks/r.ts": "export function register(on) {\n"
+                    " on('ui.render', { component: 'Spinner' }, async ($, e, next) => next(e))\n"
+                    " on('session.start', async ($, e, next) => next(e)) }\n",
+                },
+            )
+        )
+    )
+    assert "mod_unfiltered_handler" not in ids
+
+
+def test_large_file_cat_on_prompt_submit(tmp_path):
+    files = _hooks_file("UserPromptSubmit", None, 'cat "${CLAUDE_PLUGIN_ROOT}/ctx.md"')
+    files["ctx.md"] = "rule\n" * 600
+    ids = _ids(_score(make_plugin(tmp_path / "p", manifest=GOOD_MANIFEST, files=files)))
+    assert "hook_static_context_large" in ids
