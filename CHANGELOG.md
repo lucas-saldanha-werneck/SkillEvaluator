@@ -470,6 +470,17 @@ All notable changes to SkillEvaluator are documented in this file.
 
 ### Fixed
 
+- Tier 1 `security` on a target detected as a plugin (`validate` or `tier1`)
+  now runs SkillSpector once on the plugin root instead of once per bundled
+  skill. Before, the plugin's hooks (`hooks/hooks.json`, hooks in
+  `.claude-plugin/plugin.json`), its other bundled executables such as `bin/`,
+  and any file outside `skills/` were never scanned by SkillSpector, and a
+  skill line that named one of them, such as `${CLAUDE_PLUGIN_ROOT}/bin/tool`,
+  kept that skill's scan `INCOMPLETE` as a missing reference. Findings and
+  coverage gaps in those files now count, so a plugin can move from
+  `INCOMPLETE` to `FAILED` or `PASSED`. `security-scan` and folders of skills
+  still scan each skill on its own.
+
 - Configure CLI stdout to replace characters that its encoding cannot
   represent, so reports and root help complete on legacy Windows code pages.
   JSON dataset previews and validation output preserve Unicode values, using

@@ -18,6 +18,7 @@ from unittest.mock import patch
 import pytest
 
 from skillevaluator.config import load_pii_patterns
+from skillevaluator.constants import CONTENT_TYPE_PLUGIN
 from skillevaluator.provider_config import CHAT_DEFAULT_MODELS
 from skillevaluator.reporting import CLIReporter, HTMLReporter, JSONReporter, MarkdownReporter
 from skillevaluator.utils.secure_fs import stat_is_link_or_reparse
@@ -9156,6 +9157,22 @@ _GUIDE_READER_FILES = {
 }
 
 
+# The Claude Code plugin scanned for the captured plugin reports: from the
+# plugin root, SkillSpector resolves `${CLAUDE_PLUGIN_ROOT}/bin/summarize` and
+# reports a complete analysis; skills/notes-writer scanned on its own records
+# a reference_missing row.
+_NOTES_PLUGIN_FILES = {
+    ".claude-plugin/plugin.json": '{"name": "notes-plugin"}\n',
+    "skills/notes-writer/SKILL.md": (
+        "---\nname: notes-writer\n"
+        "description: Summarize meeting text into notes. Use when the user asks for meeting notes.\n---\n\n"
+        "# Notes writer\n\nRun `${CLAUDE_PLUGIN_ROOT}/bin/summarize` on the transcript.\n\n"
+        "Write the summary to `output/notes.md` and keep it short.\n"
+    ),
+    "bin/summarize": "#!/usr/bin/env python3\nimport sys\n\nprint(sys.stdin.read()[:200])\n",
+}
+
+
 def _write_skill(root: Path, files: dict[str, str]) -> Path:
     for relative, text in files.items():
         path = root / relative
@@ -10036,6 +10053,51 @@ class TestSkillspectorMissingReferences:
         alone = validator.validate_security_only(skill)
         assert alone.incomplete_scans == []
         assert alone.warnings == [_reference_caveat_warning("SKILL.md:8", files=1)]
+
+    @pytest.mark.parametrize("entry", ["validator", "run_validation"])
+    @patch("skillevaluator.validators.security.Tools")
+    def test_plugin_target_is_scanned_as_one_artifact(self, mock_tools, tmp_path: Path, entry: str) -> None:
+        """A detected plugin is scanned once from its root, so its hooks and bin/ are inspected and its skills'
+        references to them resolve."""
+        from skillevaluator.tier1.commands import run_validation
+
+        root = _write_skill(tmp_path / "notes-plugin", _NOTES_PLUGIN_FILES)
+        payload = _reference_report("2.13.3", "plugin-root")
+        mock_tools.skillspector.is_available = True
+        mock_tools.skillspector.run.return_value = ToolResult(
+            success=True, stdout=json.dumps(payload), stderr="", exit_code=0
+        )
+
+        if entry == "run_validation":
+            (result,) = run_validation(root, checks="security", content_type=CONTENT_TYPE_PLUGIN)
+        else:
+            validator = SecurityValidator(
+                use_llm=False, content_type=CONTENT_TYPE_PLUGIN, skillspector_reference_root=root
+            )
+            result = validator.validate_security_only(root)
+
+        assert mock_tools.skillspector.run.call_count == 1
+        assert mock_tools.skillspector.run.call_args.args[0][1] == str(root.resolve())
+        assert result.incomplete_scans == []
+        assert result.errors == []
+        assert result.passed
+
+    @patch("skillevaluator.validators.security.Tools")
+    def test_plugin_skills_are_scanned_one_by_one_without_the_plugin_content_type(
+        self, mock_tools, tmp_path: Path
+    ) -> None:
+        """``security-scan`` keeps scanning each skill of a plugin on its own, where a reference to a plugin file
+        stays incomplete."""
+        root = _write_skill(tmp_path / "notes-plugin", _NOTES_PLUGIN_FILES)
+        skill = root / "skills" / "notes-writer"
+        payload = _reference_report("2.13.3", "plugin-skill-missing")
+
+        result = _validate_skillspector_payload(
+            mock_tools, root, payload, validator=SecurityValidator(use_llm=False, skillspector_reference_root=root)
+        )
+
+        assert mock_tools.skillspector.run.call_args.args[0][1] == str(skill.resolve())
+        assert result.incomplete_scans == ["skillspector"]
 
     @pytest.mark.parametrize("workers", [1, 2])
     @patch("skillevaluator.validators.security.Tools")

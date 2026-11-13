@@ -42,6 +42,7 @@ from yaml.events import ScalarEvent
 from skillevaluator import finding_verification_policy
 from skillevaluator.config import load_pii_patterns
 from skillevaluator.constants import (
+    CONTENT_TYPE_PLUGIN,
     HOME_PATH_SUBMITTER_ENV_VARS,
     SCAN_EXCLUDED_DIRS,
     SCAN_EXCLUDED_FILES,
@@ -2766,7 +2767,8 @@ class SecurityValidator(ValidatorBase):
         the per-partition scans of ``tier1/plugin_checks.py``, that rule
         accepts none. Such a scan without a configured root has no known
         target, so a 2.13.3 report that :func:`reference_caveat_metadata`
-        accepts still passes as its caveat.
+        accepts still passes as its caveat. A plugin root that
+        :meth:`_scans_whole_plugin` accepts is scanned once instead of walked.
         """
         blocks: list[dict] = []
 
@@ -2780,12 +2782,35 @@ class SecurityValidator(ValidatorBase):
         target_root = self.target_root or skill_path.resolve()
         previous_target_root, self._scan_target_root = self._scan_target_root, target_root
         try:
-            result = self._validate_folder_or_skill(skill_path, validate_one, action_description=action_description)
+            if self._scans_whole_plugin(skill_path):
+                result = validate_one(skill_path)
+            else:
+                result = self._validate_folder_or_skill(skill_path, validate_one, action_description=action_description)
         finally:
             self._scan_target_root = previous_target_root
         if blocks:
             result.metadata["skillspector_applicability"] = _combine_skillspector_applicability(blocks)
         return result
+
+    def _scans_whole_plugin(self, skill_path: Path) -> bool:
+        """Whether *skill_path* is the root of a plugin that SkillSpector scans in one pass.
+
+        A plugin's hooks, manifest and bundled executables take effect on
+        install, and its skills may name them through ``${CLAUDE_PLUGIN_ROOT}``.
+        Scanning each bundled skill on its own leaves those files out of every
+        SkillSpector scan and keeps each skill's references to them
+        ``INCOMPLETE``, so the plugin root is scanned as one artifact, which is
+        then its own reference root. This applies only to a target detected as a
+        plugin whose configured ``skillspector_reference_root`` is the target
+        itself; folders of skills are still scanned skill by skill.
+        """
+        return (
+            self.content_type == CONTENT_TYPE_PLUGIN
+            and self.skillspector_reference_root is not None
+            and skill_path.is_dir()
+            and not skill_path.is_symlink()
+            and skill_path.resolve() == self.skillspector_reference_root
+        )
 
     def _validate_single_skill(self, skill_path: Path) -> ValidationResult:
         """Run complete security + PII scan on a single skill directory."""
