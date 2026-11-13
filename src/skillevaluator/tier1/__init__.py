@@ -6,6 +6,7 @@
 from skillevaluator.tier1.commands import (
     run_lint_scripts,
     run_pii_scan,
+    run_plugin_quality_check,
     run_quality_check,
     run_rubric_eval,
     run_security_scan,
@@ -15,6 +16,7 @@ from skillevaluator.tier1.commands import (
 __all__ = [
     "run_lint_scripts",
     "run_pii_scan",
+    "run_plugin_quality_check",
     "run_quality_check",
     "run_rubric_eval",
     "run_security_scan",

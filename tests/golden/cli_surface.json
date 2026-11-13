@@ -1617,6 +1617,71 @@
         }
       ]
     },
+    "plugin-quality-check": {
+      "params": [
+        {
+          "name": "target_path",
+          "opts": [
+            "target_path"
+          ],
+          "param_type": "argument",
+          "required": true,
+          "type": "path"
+        },
+        {
+          "default": "70",
+          "name": "min_score",
+          "opts": [
+            "--min-score"
+          ],
+          "param_type": "option",
+          "type": "integer"
+        },
+        {
+          "name": "plugin_quality_config",
+          "opts": [
+            "--plugin-quality-config"
+          ],
+          "param_type": "option",
+          "type": "file"
+        },
+        {
+          "name": "quality_config",
+          "opts": [
+            "--quality-config"
+          ],
+          "param_type": "option",
+          "type": "file"
+        },
+        {
+          "choices": [
+            "cli",
+            "json",
+            "html",
+            "markdown",
+            "sarif"
+          ],
+          "default": "('cli',)",
+          "multiple": true,
+          "name": "report_formats",
+          "opts": [
+            "--report",
+            "-r"
+          ],
+          "param_type": "option"
+        },
+        {
+          "default": "reports",
+          "name": "output_dir",
+          "opts": [
+            "--output-dir",
+            "-o"
+          ],
+          "param_type": "option",
+          "type": "directory"
+        }
+      ]
+    },
     "quality-check": {
       "params": [
         {
@@ -1992,6 +2057,71 @@
               "name": "pii_waivers",
               "opts": [
                 "--pii-waivers"
+              ],
+              "param_type": "option",
+              "type": "file"
+            },
+            {
+              "choices": [
+                "cli",
+                "json",
+                "html",
+                "markdown",
+                "sarif"
+              ],
+              "default": "('cli',)",
+              "multiple": true,
+              "name": "report_formats",
+              "opts": [
+                "--report",
+                "-r"
+              ],
+              "param_type": "option"
+            },
+            {
+              "default": "reports",
+              "name": "output_dir",
+              "opts": [
+                "--output-dir",
+                "-o"
+              ],
+              "param_type": "option",
+              "type": "directory"
+            }
+          ]
+        },
+        "plugin-quality-check": {
+          "params": [
+            {
+              "name": "target_path",
+              "opts": [
+                "target_path"
+              ],
+              "param_type": "argument",
+              "required": true,
+              "type": "path"
+            },
+            {
+              "default": "70",
+              "name": "min_score",
+              "opts": [
+                "--min-score"
+              ],
+              "param_type": "option",
+              "type": "integer"
+            },
+            {
+              "name": "plugin_quality_config",
+              "opts": [
+                "--plugin-quality-config"
+              ],
+              "param_type": "option",
+              "type": "file"
+            },
+            {
+              "name": "quality_config",
+              "opts": [
+                "--quality-config"
               ],
               "param_type": "option",
               "type": "file"
@@ -4799,6 +4929,24 @@
           ],
           "param_type": "option",
           "type": "file"
+        },
+        {
+          "name": "plugin_quality_config",
+          "opts": [
+            "--plugin-quality-config"
+          ],
+          "param_type": "option",
+          "type": "file"
+        },
+        {
+          "default": "False",
+          "is_flag": true,
+          "name": "enforce_plugin_quality",
+          "opts": [
+            "--enforce-plugin-quality"
+          ],
+          "param_type": "option",
+          "type": "boolean"
         },
         {
           "name": "pii_waivers",

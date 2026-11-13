@@ -30,6 +30,7 @@ from skillevaluator.constants import (
 from skillevaluator.doctor import DEFAULT_PROBE_TIMEOUT_SEC, MAX_PROBE_TIMEOUT_SEC
 from skillevaluator.logging_config import setup_logging
 from skillevaluator.models.result import ValidationResult
+from skillevaluator.plugin_quality_config import PluginQualityConfigError, load_plugin_quality_config
 from skillevaluator.quality_config import QualityConfigError, load_quality_config
 from skillevaluator.reporting.console_ui import (
     TierRow,
@@ -58,6 +59,7 @@ from skillevaluator.tier1.commands import (
     enabled_check_lineup,
     run_lint_scripts,
     run_pii_scan,
+    run_plugin_quality_check,
     run_quality_check,
     run_rubric_eval,
     run_security_scan,
@@ -144,6 +146,25 @@ class _QualityConfigPath(click.Path):
 
 
 QUALITY_CONFIG_PATH = _QualityConfigPath()
+
+
+class _PluginQualityConfigPath(click.Path):
+    """A ``--plugin-quality-config`` file, validated while arguments are parsed."""
+
+    def __init__(self) -> None:
+        super().__init__(exists=True, dir_okay=False, path_type=Path)
+
+    def convert(self, value, param, ctx):
+        path = super().convert(value, param, ctx)
+        try:
+            load_plugin_quality_config(path)
+        except PluginQualityConfigError as exc:
+            self.fail(str(exc), param, ctx)
+        return path
+
+
+PLUGIN_QUALITY_CONFIG_PATH = _PluginQualityConfigPath()
+_PLUGIN_QUALITY_CONFIG_HELP = "Override the packaged plugin-quality-default.yaml with a custom YAML file."
 # Resolved so parallel catalog children receive the same absolute file.
 SKILLSPECTOR_BASELINE_PATH = click.Path(exists=True, dir_okay=False, readable=True, resolve_path=True, path_type=Path)
 _SKILLSPECTOR_BASELINE_HELP = (
@@ -252,7 +273,7 @@ _TOP_LEVEL_COMMAND_HELP_GROUPS = (
     ("Repository CI", ("ci",)),
     (
         "Tier 1 · Static and security",
-        ("quality-check", "rubric-eval", "security-scan", "pii-scan", "lint-scripts"),
+        ("quality-check", "plugin-quality-check", "rubric-eval", "security-scan", "pii-scan", "lint-scripts"),
     ),
     (
         "Tier 2 · Deduplication",
@@ -1403,6 +1424,10 @@ def _catalog_child_argv_from_ctx(
         argv.extend(["--min-score", str(min_score)])
     if params.get("quality_config"):
         argv.extend(["--quality-config", str(Path(params["quality_config"]).resolve())])
+    if params.get("plugin_quality_config"):
+        argv.extend(["--plugin-quality-config", str(Path(params["plugin_quality_config"]).resolve())])
+    if params.get("enforce_plugin_quality"):
+        argv.append("--enforce-plugin-quality")
     if params.get("pii_waivers"):
         # Not resolved: a waiver file's entries are relative to the directory the file (or the
         # symlink to it) is in, so a child must see the same path the parent was given.
@@ -2017,6 +2042,22 @@ def _print_run_banner(target_path: Path, content_type: str, profile: str | None)
     help="Override the packaged quality-default.yaml with a custom YAML file.",
 )
 @click.option(
+    "--plugin-quality-config",
+    type=PLUGIN_QUALITY_CONFIG_PATH,
+    default=None,
+    cls=GroupedOption,
+    help_group=_TIER1_GROUP,
+    help=_PLUGIN_QUALITY_CONFIG_HELP,
+)
+@click.option(
+    "--enforce-plugin-quality",
+    is_flag=True,
+    default=False,
+    cls=GroupedOption,
+    help_group=_TIER1_GROUP,
+    help="Fail the 'quality' check of a plugin when its plugin quality score does not pass (advisory by default).",
+)
+@click.option(
     "--pii-waivers",
     type=PII_WAIVERS_PATH,
     default=None,
@@ -2327,6 +2368,8 @@ def validate(
     skillspector_baseline: Path | None,
     min_score: int,
     quality_config: Path | None,
+    plugin_quality_config: Path | None,
+    enforce_plugin_quality: bool,
     pii_waivers: Path | None,
     profile: str | None,
     external: bool,
@@ -2569,6 +2612,8 @@ def validate(
         skillspector_baseline=skillspector_baseline,
         min_score=min_score,
         quality_config=quality_config,
+        plugin_quality_config=plugin_quality_config,
+        enforce_plugin_quality=enforce_plugin_quality,
         pii_waivers=pii_waivers,
         previous_version=previous_version,
         policy=policy,
@@ -2915,6 +2960,43 @@ def quality_check(
         basename=report_basename("quality"),
     ):
         raise click.ClickException("quality check failed")
+
+
+@cli.command("plugin-quality-check")
+@_target_argument
+@click.option("--min-score", type=int, default=QUALITY_DEFAULT_MIN_SCORE, show_default=True)
+@click.option(
+    "--plugin-quality-config", type=PLUGIN_QUALITY_CONFIG_PATH, default=None, help=_PLUGIN_QUALITY_CONFIG_HELP
+)
+@click.option(
+    "--quality-config",
+    type=QUALITY_CONFIG_PATH,
+    default=None,
+    help="Override the packaged quality-default.yaml used for bundled skills.",
+)
+@_report_options
+def plugin_quality_check(
+    target_path: Path,
+    min_score: int,
+    plugin_quality_config: Path | None,
+    quality_config: Path | None,
+    report_formats: tuple[str, ...],
+    output_dir: Path,
+) -> None:
+    """Score a plugin's manifest, commands, agents, hooks and mods on the skill quality scale."""
+    output_dir = _resolve_file_report_output_location(target_path.resolve(), output_dir, report_formats)
+    if not emit_reports(
+        run_plugin_quality_check(
+            target_path,
+            min_score=min_score,
+            plugin_quality_config=plugin_quality_config,
+            quality_config=quality_config,
+        ),
+        report_formats=report_formats,
+        output_dir=output_dir,
+        basename=report_basename("plugin-quality"),
+    ):
+        raise click.ClickException("plugin quality check failed")
 
 
 @cli.command("rubric-eval")
@@ -4223,6 +4305,7 @@ def harbor_view(jobs_dir: Path) -> None:
 tier1.workflow = _tier1_workflow
 tier1.add_command(copy.copy(_tier1_workflow), "validate")
 tier1.add_command(quality_check, "quality-check")
+tier1.add_command(plugin_quality_check, "plugin-quality-check")
 tier1.add_command(rubric_eval, "rubric-eval")
 tier1.add_command(security_scan, "security-scan")
 tier1.add_command(pii_scan, "pii-scan")

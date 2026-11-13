@@ -49,6 +49,7 @@ from skillevaluator.validators.code_risk import CodeRiskValidator
 from skillevaluator.validators.dependencies import DependencySecurityValidator
 from skillevaluator.validators.hygiene import HygieneValidator
 from skillevaluator.validators.license import LicenseValidator
+from skillevaluator.validators.plugin_quality_score import PluginQualityScoreValidator
 from skillevaluator.validators.plugin_schema import PluginSchemaValidator
 from skillevaluator.validators.policy import ValidationPolicy, apply_policy
 from skillevaluator.validators.quality_score import QualityScoreValidator
@@ -305,6 +306,8 @@ def run_validation(
     on_check: Callable[[str], None] | None = None,
     skillspector_baseline: Path | None = None,
     skip: str | None = None,
+    plugin_quality_config: Path | None = None,
+    enforce_plugin_quality: bool = False,
 ) -> list[ValidationResult]:
     """Run selected Tier 1 validators and return structured results.
 
@@ -317,8 +320,9 @@ def run_validation(
 
     *content_type* (``skill`` | ``rules`` | ``workflows`` | ``plugin`` |
     ``unknown`` | ``None``) selects the schema validator and gates skill-only
-    checks (``quality`` and ``lint`` are skipped for rules, workflows, and
-    plugins). For ``unknown`` (``--type auto`` found no supported artifact) the
+    checks (``quality`` and ``lint`` are skipped for rules and workflows; for a
+    plugin, ``quality`` runs the plugin quality score, which reports without
+    failing unless *enforce_plugin_quality* is set). For ``unknown`` (``--type auto`` found no supported artifact) the
     manifest checks ``schema``, ``version`` and ``quality`` are recorded as not
     applicable instead of run, and every result carries the
     ``tier1_applicability`` record, while the content scans still run. A target
@@ -427,6 +431,15 @@ def run_validation(
         v = QualityScoreValidator(min_score=min_score, quality_config=quality_config)
         return [_run_result("quality", v.name, v.description, v.validate)]
 
+    def _plugin_quality_results() -> list[ValidationResult]:
+        v = PluginQualityScoreValidator(
+            min_score=min_score,
+            plugin_quality_config=plugin_quality_config,
+            quality_config=quality_config,
+            enforce=enforce_plugin_quality,
+        )
+        return [_run_result("quality", v.name, v.description, v.validate)]
+
     def _lint_results() -> list[ValidationResult]:
         v = ScriptLintValidator()
         return [_run_result("lint", v.name, v.description, v.validate)]
@@ -457,7 +470,11 @@ def run_validation(
         ("code-integrity", _code_integrity_results, True),
         ("dependency", _dependency_results, True),
         ("unicode", _unicode_results, True),
-        ("quality", _quality_results, skill_like),
+        (
+            "quality",
+            _quality_results if skill_like else _plugin_quality_results,
+            skill_like or content_type == CONTENT_TYPE_PLUGIN,
+        ),
         ("lint", _lint_results, skill_like),
     )
     active = [
@@ -536,6 +553,32 @@ def run_quality_check(
             validator.validate,
             target_path,
             publication_check_id="quality",
+        )
+    ]
+
+
+def run_plugin_quality_check(
+    target_path: Path,
+    *,
+    min_score: int = QUALITY_DEFAULT_MIN_SCORE,
+    plugin_quality_config: Path | None = None,
+    quality_config: Path | None = None,
+    enforce: bool = True,
+) -> list[ValidationResult]:
+    validator = PluginQualityScoreValidator(
+        min_score=min_score,
+        plugin_quality_config=plugin_quality_config,
+        quality_config=quality_config,
+        enforce=enforce,
+    )
+    return [
+        _as_result(
+            validator.name,
+            validator.description,
+            validator.validate,
+            target_path,
+            publication_check_id="quality",
+            skill_like=False,
         )
     ]
 
